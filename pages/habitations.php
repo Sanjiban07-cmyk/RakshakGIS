@@ -326,9 +326,6 @@ if ($result) {
 }
 
 
-if (isset($stmt)) {
-    $stmt->close();
-}
 
 
 /*
@@ -1460,23 +1457,12 @@ function getRiskClass(string $level): string
                                             <div class="action-buttons">
 
 
-                                                <button
-                                                    type="button"
-                                                    class="btn btn-small btn-edit"
-                                                    onclick='openEditModal(
-                                                        <?= json_encode(
-                                                            $habitation,
-                                                            JSON_HEX_TAG |
-                                                            JSON_HEX_APOS |
-                                                            JSON_HEX_QUOT |
-                                                            JSON_HEX_AMP
-                                                        ) ?>
-                                                    )'
-                                                >
-
-                                                    Edit
-
-                                                </button>
+                                               <a
+    href="edit_habitation.php?id=<?= (int)$habitation['id'] ?>"
+    class="btn btn-small btn-edit"
+>
+    Edit
+</a>
 
 
                                                 <form

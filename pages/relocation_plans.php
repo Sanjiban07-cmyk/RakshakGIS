@@ -1579,29 +1579,21 @@ function statusBadgeClass(
 <aside class="sidebar">
 
 
-<a
-    href="../index.php"
-    class="logo"
->
-
+<a href="../index.php" class="logo">
     <div class="logo-icon">
-        R
+        <span>R</span>
     </div>
 
-    <div>
-
+    <div class="logo-brand">
         <div class="logo-text">
-            RakshakGIS
+            RAKSHAK <span>GIS</span>
         </div>
 
         <div class="logo-subtitle">
-            Disaster Risk & Relocation
+            DISASTER RISK INTELLIGENCE
         </div>
-
     </div>
-
 </a>
-
 
 <nav class="sidebar-nav">
 

@@ -1107,30 +1107,21 @@ function safetyClass(string $level): string
     <aside class="sidebar">
 
 
-        <a
-            href="../index.php"
-            class="logo"
-        >
+        <a href="../index.php" class="logo">
+    <div class="logo-icon">
+        <span>R</span>
+    </div>
 
-            <div class="logo-icon">
-                R
-            </div>
+    <div class="logo-brand">
+        <div class="logo-text">
+            RAKSHAK <span>GIS</span>
+        </div>
 
-
-            <div>
-
-                <div class="logo-text">
-                    RakshakGIS
-                </div>
-
-                <div class="logo-subtitle">
-                    Disaster Risk & Relocation
-                </div>
-
-            </div>
-
-        </a>
-
+        <div class="logo-subtitle">
+            DISASTER RISK INTELLIGENCE
+        </div>
+    </div>
+</a>
 
         <nav class="sidebar-nav">
 

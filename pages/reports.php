@@ -1,1309 +1,2219 @@
 <?php
 
-$currentPage = 'reports';
+error_reporting(E_ALL);
+ini_set('display_errors', '1');
+
+require_once __DIR__ . "/../config/auth.php";
+requireLogin();
+
+require_once __DIR__ . "/../config/database.php";
+
+$user = currentUser();
+
+
+/*
+|--------------------------------------------------------------------------
+| HABITATION SUMMARY
+|--------------------------------------------------------------------------
+*/
+
+$habitationSummary = [
+    "total" => 0,
+    "population" => 0
+];
+
+$result = $conn->query("
+    SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(population), 0) AS population
+    FROM habitations
+");
+
+if ($result) {
+    $habitationSummary = $result->fetch_assoc();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| RISK SUMMARY
+|--------------------------------------------------------------------------
+*/
+
+$riskSummary = [
+    "high" => 0,
+    "medium" => 0,
+    "low" => 0,
+    "red_zone" => 0
+];
+
+$result = $conn->query("
+    SELECT
+        COALESCE(SUM(
+            CASE
+                WHEN risk_level = 'HIGH' THEN 1
+                ELSE 0
+            END
+        ), 0) AS high,
+
+        COALESCE(SUM(
+            CASE
+                WHEN risk_level = 'MEDIUM' THEN 1
+                ELSE 0
+            END
+        ), 0) AS medium,
+
+        COALESCE(SUM(
+            CASE
+                WHEN risk_level = 'LOW' THEN 1
+                ELSE 0
+            END
+        ), 0) AS low,
+
+        COALESCE(SUM(
+            CASE
+                WHEN red_zone = 1 THEN 1
+                ELSE 0
+            END
+        ), 0) AS red_zone
+
+    FROM risk_assessments ra
+
+    WHERE ra.id IN (
+        SELECT MAX(ra2.id)
+        FROM risk_assessments ra2
+        GROUP BY ra2.habitation_id
+    )
+");
+
+if ($result) {
+    $riskSummary = $result->fetch_assoc();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| HIGH-RISK POPULATION
+|--------------------------------------------------------------------------
+*/
+
+$highRiskPopulation = 0;
+
+$result = $conn->query("
+    SELECT
+        COALESCE(SUM(h.population), 0) AS population
+
+    FROM habitations h
+
+    INNER JOIN risk_assessments ra
+        ON ra.id = (
+            SELECT ra2.id
+            FROM risk_assessments ra2
+            WHERE ra2.habitation_id = h.id
+            ORDER BY ra2.assessed_at DESC, ra2.id DESC
+            LIMIT 1
+        )
+
+    WHERE ra.risk_level = 'HIGH'
+");
+
+if ($result) {
+    $row = $result->fetch_assoc();
+    $highRiskPopulation = (int) $row["population"];
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| RELOCATION SUMMARY
+|--------------------------------------------------------------------------
+*/
+
+$relocationSummary = [
+    "total" => 0,
+    "planned" => 0,
+    "approved" => 0,
+    "in_progress" => 0,
+    "completed" => 0
+];
+
+$result = $conn->query("
+    SELECT
+
+        COUNT(*) AS total,
+
+        SUM(
+            CASE
+                WHEN status = 'PLANNED' THEN 1
+                ELSE 0
+            END
+        ) AS planned,
+
+        SUM(
+            CASE
+                WHEN status = 'APPROVED' THEN 1
+                ELSE 0
+            END
+        ) AS approved,
+
+        SUM(
+            CASE
+                WHEN status = 'IN_PROGRESS' THEN 1
+                ELSE 0
+            END
+        ) AS in_progress,
+
+        SUM(
+            CASE
+                WHEN status = 'COMPLETED' THEN 1
+                ELSE 0
+            END
+        ) AS completed
+
+    FROM relocation_plans
+");
+
+if ($result) {
+    $row = $result->fetch_assoc();
+
+    $relocationSummary = [
+        "total" =>
+            (int) ($row["total"] ?? 0),
+
+        "planned" =>
+            (int) ($row["planned"] ?? 0),
+
+        "approved" =>
+            (int) ($row["approved"] ?? 0),
+
+        "in_progress" =>
+            (int) ($row["in_progress"] ?? 0),
+
+        "completed" =>
+            (int) ($row["completed"] ?? 0)
+    ];
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| RELOCATION SITE SUMMARY
+|--------------------------------------------------------------------------
+*/
+
+$siteSummary = [
+    "total" => 0,
+    "capacity" => 0,
+    "available" => 0
+];
+
+$result = $conn->query("
+    SELECT
+
+        COUNT(*) AS total,
+
+        COALESCE(
+            SUM(total_capacity),
+            0
+        ) AS capacity,
+
+        COALESCE(
+            SUM(
+                GREATEST(
+                    total_capacity - occupied_capacity,
+                    0
+                )
+            ),
+            0
+        ) AS available
+
+    FROM relocation_sites
+");
+
+if ($result) {
+    $siteSummary = $result->fetch_assoc();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| HIGH-RISK HABITATIONS
+|--------------------------------------------------------------------------
+*/
+
+$highRiskHabitations = [];
+
+$result = $conn->query("
+    SELECT
+
+        h.name,
+        h.district,
+        h.population,
+
+        ra.risk_score,
+        ra.risk_level,
+        ra.red_zone,
+        ra.relocation_priority,
+        ra.assessed_at
+
+    FROM habitations h
+
+    INNER JOIN risk_assessments ra
+        ON ra.id = (
+            SELECT ra2.id
+            FROM risk_assessments ra2
+            WHERE ra2.habitation_id = h.id
+            ORDER BY ra2.assessed_at DESC, ra2.id DESC
+            LIMIT 1
+        )
+
+    WHERE ra.risk_level = 'HIGH'
+
+    ORDER BY
+        ra.risk_score DESC
+");
+
+if ($result) {
+
+    while ($row = $result->fetch_assoc()) {
+
+        $highRiskHabitations[] = $row;
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| RELOCATION SITES
+|--------------------------------------------------------------------------
+*/
+
+$relocationSites = [];
+
+$result = $conn->query("
+    SELECT
+
+        site_name,
+        district,
+        total_capacity,
+        occupied_capacity,
+        safety_level,
+        distance_from_habitation
+
+    FROM relocation_sites
+
+    ORDER BY site_name
+");
+
+if ($result) {
+
+    while ($row = $result->fetch_assoc()) {
+
+        $relocationSites[] = $row;
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| RISK PERCENTAGE
+|--------------------------------------------------------------------------
+*/
+
+$totalAssessed =
+    (int) $riskSummary["high"]
+    +
+    (int) $riskSummary["medium"]
+    +
+    (int) $riskSummary["low"];
+
+
+$highPercent =
+    $totalAssessed > 0
+        ? round(
+            (
+                $riskSummary["high"]
+                /
+                $totalAssessed
+            ) * 100
+        )
+        : 0;
+
+
+$mediumPercent =
+    $totalAssessed > 0
+        ? round(
+            (
+                $riskSummary["medium"]
+                /
+                $totalAssessed
+            ) * 100
+        )
+        : 0;
+
+
+$lowPercent =
+    $totalAssessed > 0
+        ? round(
+            (
+                $riskSummary["low"]
+                /
+                $totalAssessed
+            ) * 100
+        )
+        : 0;
+
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
+
+function riskClass(?string $risk): string
+{
+    return match ($risk) {
+
+        "HIGH" => "risk-high",
+
+        "MEDIUM" => "risk-medium",
+
+        "LOW" => "risk-low",
+
+        default => "risk-none"
+    };
+}
 
 ?>
 
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
 
-    <meta charset="UTF-8">
+<meta charset="UTF-8">
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+>
 
-    <title>Reports | RakshakGIS</title>
+<title>
+    Reports | RakshakGIS
+</title>
 
-    <link
-        rel="stylesheet"
-        href="../assets/css/style.css"
-    >
 
-    <style>
+<link
+    rel="stylesheet"
+    href="../assets/css/style.css"
+>
 
-        .reports-page {
-            padding: 30px;
-        }
 
-        .report-controls {
-            display: flex;
-            align-items: end;
-            gap: 15px;
-            margin-bottom: 25px;
-        }
+<style>
 
-        .control-group {
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-        }
+/* =====================================================
+   REPORT PAGE
+   ===================================================== */
 
-        .control-group label {
-            font-size: 14px;
-            font-weight: 600;
-            color: #475569;
-        }
+.report-header {
 
-        .report-select {
-            min-width: 300px;
-            padding: 11px 14px;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            background: #ffffff;
-            font-size: 15px;
-        }
+    display: flex;
 
-        .report-card {
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
-            border-radius: 14px;
-            overflow: hidden;
-        }
+    justify-content: space-between;
 
-        .report-header {
-            padding: 25px 30px;
-            border-bottom: 1px solid #e2e8f0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+    align-items: flex-start;
 
-        .report-title h2 {
-            margin: 0 0 5px;
-        }
+    gap: 20px;
 
-        .report-title p {
-            margin: 0;
-            color: #64748b;
-        }
+    margin-bottom: 24px;
+}
 
-        .report-body {
-            padding: 30px;
-        }
 
-        .report-section {
-            margin-bottom: 30px;
-        }
+.report-heading h1 {
 
-        .report-section h3 {
-            margin-bottom: 18px;
-            color: #0f172a;
-        }
+    font-size: 24px;
 
-        .report-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 15px;
-        }
+    font-weight: 800;
+}
 
-        .report-info {
-            padding: 18px;
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 10px;
-        }
 
-        .report-info-label {
-            font-size: 12px;
-            color: #64748b;
-            text-transform: uppercase;
-            margin-bottom: 7px;
-        }
+.report-heading p {
 
-        .report-info-value {
-            font-size: 20px;
-            font-weight: 700;
-            color: #0f172a;
-        }
+    font-size: 12px;
 
-        .risk-score-box {
-            display: flex;
-            align-items: center;
-            gap: 30px;
-            padding: 25px;
-            border-radius: 12px;
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-        }
+    color: var(--muted);
 
-        .risk-score {
-            font-size: 42px;
-            font-weight: 800;
-            color: #dc2626;
-        }
+    margin-top: 5px;
+}
 
-        .risk-badge {
-            display: inline-block;
-            padding: 7px 15px;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 13px;
-        }
 
-        .risk-high {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
+.report-actions {
 
-        .risk-medium {
-            background: #fef3c7;
-            color: #b45309;
-        }
+    display: flex;
 
-        .risk-low {
-            background: #dcfce7;
-            color: #15803d;
-        }
+    gap: 8px;
+}
 
-        .risk-none {
-            background: #e2e8f0;
-            color: #475569;
-        }
 
-        .factor-row {
-            margin-bottom: 18px;
-        }
+/* =====================================================
+   REPORT DOCUMENT
+   ===================================================== */
 
-        .factor-top {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 7px;
-        }
+.report-document {
 
-        .factor-name {
-            font-weight: 600;
-        }
+    background: white;
 
-        .factor-value {
-            font-weight: 700;
-        }
+    border: 1px solid var(--border);
 
-        .factor-bar {
-            height: 9px;
-            background: #e2e8f0;
-            border-radius: 20px;
-            overflow: hidden;
-        }
+    border-radius: 14px;
 
-        .factor-fill {
-            height: 100%;
-            background: #2563eb;
-            border-radius: 20px;
-        }
+    padding: 30px;
 
-        .red-zone {
-            padding: 18px 20px;
-            background: #fee2e2;
-            border: 1px solid #fecaca;
-            border-radius: 10px;
-            color: #991b1b;
-            font-weight: 700;
-        }
+    box-shadow:
+        0 1px 3px
+        rgba(15,23,42,.04);
+}
 
-        .priority-box {
-            padding: 18px 20px;
-            background: #fff7ed;
-            border: 1px solid #fed7aa;
-            border-radius: 10px;
-            color: #9a3412;
-            font-weight: 700;
-            margin-top: 12px;
-        }
 
-        .report-actions {
-            display: flex;
-            gap: 10px;
-        }
+/* =====================================================
+   REPORT BRAND
+   ===================================================== */
 
-        .empty-report {
-            padding: 60px 20px;
-            text-align: center;
-            color: #64748b;
-        }
+.report-brand {
 
-        .loading {
-            padding: 40px;
-            text-align: center;
-            color: #64748b;
-        }
+    display: flex;
 
-        .notes-box {
-            padding: 18px;
-            background: #f8fafc;
-            border-radius: 10px;
-            border: 1px solid #e2e8f0;
-            color: #475569;
-            line-height: 1.6;
-        }
+    justify-content: space-between;
 
-        @media (max-width: 800px) {
+    align-items: flex-start;
 
-            .report-controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
+    padding-bottom: 22px;
 
-            .report-select {
-                min-width: 0;
-                width: 100%;
-            }
+    border-bottom: 2px solid #e2e8f0;
 
-            .report-grid {
-                grid-template-columns: 1fr;
-            }
+    margin-bottom: 25px;
+}
 
-            .report-header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 15px;
-            }
 
-        }
+.brand-left {
 
-        @media print {
+    display: flex;
 
-            .sidebar,
-            .topbar,
-            .report-controls,
-            .report-actions {
-                display: none !important;
-            }
+    align-items: center;
 
-            .main {
-                margin: 0 !important;
-                width: 100% !important;
-            }
+    gap: 12px;
+}
 
-            .reports-page {
-                padding: 0;
-            }
 
-            .report-card {
-                border: none;
-            }
+.brand-logo {
 
-        }
+    width: 46px;
 
-    </style>
+    height: 46px;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+
+    border-radius: 12px;
+
+    background: var(--primary);
+
+    color: white;
+
+    font-size: 22px;
+
+    font-weight: 900;
+}
+
+
+.brand-name {
+
+    font-size: 20px;
+
+    font-weight: 900;
+
+    color: #1e3a8a;
+}
+
+
+.brand-subtitle {
+
+    font-size: 10px;
+
+    color: var(--muted);
+
+    margin-top: 2px;
+}
+
+
+.report-meta {
+
+    text-align: right;
+
+    font-size: 10px;
+
+    color: var(--muted);
+
+    line-height: 1.7;
+}
+
+
+/* =====================================================
+   REPORT TITLE
+   ===================================================== */
+
+.report-title {
+
+    margin-bottom: 22px;
+}
+
+
+.report-title h2 {
+
+    font-size: 20px;
+
+    font-weight: 800;
+}
+
+
+.report-title p {
+
+    color: var(--muted);
+
+    font-size: 11px;
+
+    margin-top: 4px;
+}
+
+
+/* =====================================================
+   SUMMARY CARDS
+   ===================================================== */
+
+.report-summary {
+
+    display: grid;
+
+    grid-template-columns:
+        repeat(4, 1fr);
+
+    gap: 14px;
+
+    margin-bottom: 28px;
+}
+
+
+.report-stat {
+
+    border: 1px solid var(--border);
+
+    border-radius: 10px;
+
+    padding: 16px;
+
+    background: #f8fafc;
+}
+
+
+.report-stat-label {
+
+    font-size: 10px;
+
+    color: var(--muted);
+}
+
+
+.report-stat-value {
+
+    font-size: 24px;
+
+    font-weight: 900;
+
+    margin-top: 5px;
+}
+
+
+/* =====================================================
+   SECTIONS
+   ===================================================== */
+
+.report-section {
+
+    margin-top: 28px;
+}
+
+
+.report-section-title {
+
+    font-size: 15px;
+
+    font-weight: 800;
+
+    padding-bottom: 9px;
+
+    border-bottom: 1px solid var(--border);
+
+    margin-bottom: 15px;
+}
+
+
+/* =====================================================
+   RISK DISTRIBUTION
+   ===================================================== */
+
+.risk-overview {
+
+    display: grid;
+
+    grid-template-columns:
+        1fr 1fr;
+
+    gap: 20px;
+}
+
+
+.risk-bars {
+
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 13px;
+}
+
+
+.risk-row {
+
+    display: grid;
+
+    grid-template-columns:
+        80px 1fr 35px;
+
+    align-items: center;
+
+    gap: 10px;
+}
+
+
+.risk-label {
+
+    font-size: 11px;
+
+    font-weight: 700;
+}
+
+
+.risk-track {
+
+    height: 9px;
+
+    border-radius: 99px;
+
+    background: #e2e8f0;
+
+    overflow: hidden;
+}
+
+
+.risk-fill {
+
+    height: 100%;
+
+    border-radius: 99px;
+}
+
+
+.risk-fill-high {
+
+    width: <?= $highPercent ?>%;
+
+    background: #ef4444;
+}
+
+
+.risk-fill-medium {
+
+    width: <?= $mediumPercent ?>%;
+
+    background: #f59e0b;
+}
+
+
+.risk-fill-low {
+
+    width: <?= $lowPercent ?>%;
+
+    background: #22c55e;
+}
+
+
+.risk-count {
+
+    font-size: 11px;
+
+    font-weight: 800;
+
+    text-align: right;
+}
+
+
+/* =====================================================
+   INFO GRID
+   ===================================================== */
+
+.info-grid {
+
+    display: grid;
+
+    grid-template-columns:
+        repeat(3, 1fr);
+
+    gap: 14px;
+}
+
+
+.info-card {
+
+    border: 1px solid var(--border);
+
+    border-radius: 10px;
+
+    padding: 16px;
+}
+
+
+.info-label {
+
+    font-size: 10px;
+
+    color: var(--muted);
+}
+
+
+.info-value {
+
+    font-size: 22px;
+
+    font-weight: 900;
+
+    margin-top: 4px;
+}
+
+
+.info-description {
+
+    font-size: 10px;
+
+    color: var(--muted);
+
+    margin-top: 4px;
+}
+
+
+/* =====================================================
+   TABLE
+   ===================================================== */
+
+.report-table {
+
+    width: 100%;
+
+    border-collapse: collapse;
+}
+
+
+.report-table th {
+
+    background: #f8fafc;
+
+    color: #64748b;
+
+    font-size: 10px;
+
+    text-transform: uppercase;
+
+    letter-spacing: .4px;
+
+    text-align: left;
+}
+
+
+.report-table th,
+.report-table td {
+
+    padding: 11px 12px;
+
+    border-bottom: 1px solid var(--border);
+}
+
+
+.report-table td {
+
+    font-size: 11px;
+}
+
+
+.report-table tbody tr:last-child td {
+
+    border-bottom: none;
+}
+
+
+.risk-badge {
+
+    display: inline-flex;
+
+    padding: 4px 8px;
+
+    border-radius: 999px;
+
+    font-size: 9px;
+
+    font-weight: 800;
+}
+
+
+.risk-high {
+
+    background: #fee2e2;
+
+    color: #b91c1c;
+}
+
+
+.risk-medium {
+
+    background: #fef3c7;
+
+    color: #b45309;
+}
+
+
+.risk-low {
+
+    background: #dcfce7;
+
+    color: #15803d;
+}
+
+
+.risk-none {
+
+    background: #f1f5f9;
+
+    color: #64748b;
+}
+
+
+.capacity-available {
+
+    font-weight: 800;
+
+    color: #15803d;
+}
+
+
+/* =====================================================
+   FOOTER
+   ===================================================== */
+
+.report-footer {
+
+    margin-top: 30px;
+
+    padding-top: 15px;
+
+    border-top: 1px solid var(--border);
+
+    display: flex;
+
+    justify-content: space-between;
+
+    font-size: 9px;
+
+    color: var(--muted);
+}
+
+
+/* =====================================================
+   EMPTY
+   ===================================================== */
+
+.empty-report {
+
+    text-align: center;
+
+    padding: 25px;
+
+    color: var(--muted);
+
+    font-size: 11px;
+}
+
+
+/* =====================================================
+   RESPONSIVE
+   ===================================================== */
+
+@media (max-width: 900px) {
+
+    .report-summary {
+
+        grid-template-columns:
+            repeat(2, 1fr);
+    }
+
+    .risk-overview {
+
+        grid-template-columns: 1fr;
+    }
+
+    .info-grid {
+
+        grid-template-columns:
+            1fr 1fr;
+    }
+
+}
+
+
+@media (max-width: 600px) {
+
+    .report-header {
+
+        flex-direction: column;
+    }
+
+    .report-summary {
+
+        grid-template-columns: 1fr;
+    }
+
+    .info-grid {
+
+        grid-template-columns: 1fr;
+    }
+
+    .report-document {
+
+        padding: 18px;
+    }
+
+}
+
+
+/* =====================================================
+   PRINT
+   ===================================================== */
+
+@media print {
+
+    body {
+
+        background: white !important;
+    }
+
+
+    .sidebar,
+    .topbar,
+    .report-actions {
+
+        display: none !important;
+    }
+
+
+    .main {
+
+        margin-left: 0 !important;
+
+        width: 100% !important;
+    }
+
+
+    .content {
+
+        padding: 0 !important;
+
+        max-width: none !important;
+    }
+
+
+    .report-document {
+
+        border: none;
+
+        box-shadow: none;
+
+        border-radius: 0;
+
+        padding: 0;
+    }
+
+
+    .report-header {
+
+        display: none;
+    }
+
+
+    .report-section {
+
+        break-inside: avoid;
+    }
+
+
+    .report-table {
+
+        page-break-inside: auto;
+    }
+
+
+    .report-table tr {
+
+        page-break-inside: avoid;
+
+        page-break-after: auto;
+    }
+
+}
+
+</style>
 
 </head>
 
 
 <body>
 
+
 <div class="app">
 
 
-    <!-- SIDEBAR -->
+<!-- =====================================================
+     SIDEBAR
+     ===================================================== -->
 
-    <aside class="sidebar">
+<aside class="sidebar">
 
-        <div class="logo">
 
-            <div class="logo-icon">
-                R
-            </div>
+<a
+    href="../index.php"
+    class="logo"
+>
 
-            <div>
+    <div class="logo-icon">
+        R
+    </div>
 
-                <div class="logo-text">
-                    RakshakGIS
-                </div>
 
-                <div class="logo-subtitle">
-                    Disaster Risk & Relocation
-                </div>
+    <div>
 
-            </div>
-
+        <div class="logo-text">
+            RakshakGIS
         </div>
 
+        <div class="logo-subtitle">
+            Disaster Risk & Relocation
+        </div>
 
-        <nav class="sidebar-nav">
+    </div>
 
-            <div class="nav-section">
-                Main
-            </div>
+</a>
 
 
-            <a href="dashboard.php" class="nav-link">
+<nav class="sidebar-nav">
 
-                <span class="nav-icon">
-                    ⌂
-                </span>
 
-                Dashboard
+<div class="nav-section">
+    Main
+</div>
 
-            </a>
 
+<a
+    href="../index.php"
+    class="nav-link"
+>
+    <span class="nav-icon">⌂</span>
+    Dashboard
+</a>
 
-            <a href="habitations.php" class="nav-link">
 
-                <span class="nav-icon">
-                    ⌂
-                </span>
+<a
+    href="habitations.php"
+    class="nav-link"
+>
+    <span class="nav-icon">⌖</span>
+    Habitations
+</a>
 
-                Habitations
 
-            </a>
+<a
+    href="risk_assessment.php"
+    class="nav-link"
+>
+    <span class="nav-icon">⚠</span>
+    Risk Assessment
+</a>
 
 
-            <a href="add_habitation.php" class="nav-link">
+<a
+    href="risk_map.php"
+    class="nav-link"
+>
+    <span class="nav-icon">◎</span>
+    Risk Map
+</a>
 
-                <span class="nav-icon">
-                    ＋
-                </span>
 
-                Add Habitation
+<div class="nav-section">
+    Relocation
+</div>
 
-            </a>
 
+<a
+    href="relocation_sites.php"
+    class="nav-link"
+>
+    <span class="nav-icon">⌂</span>
+    Relocation Sites
+</a>
 
-            <a href="risk_assessment.php" class="nav-link">
 
-                <span class="nav-icon">
-                    ⚠
-                </span>
+<a
+    href="relocation_plans.php"
+    class="nav-link"
+>
+    <span class="nav-icon">→</span>
+    Relocation Plans
+</a>
 
-                Risk Assessment
 
-            </a>
+<div class="nav-section">
+    System
+</div>
 
 
-            <a href="map.php" class="nav-link">
+<a
+    href="reports.php"
+    class="nav-link active"
+>
+    <span class="nav-icon">▤</span>
+    Reports
+</a>
 
-                <span class="nav-icon">
-                    ●
-                </span>
 
-                Interactive Map
+<?php if (($user["role"] ?? "") === "ADMIN"): ?>
 
-            </a>
+<a
+    href="admin.php"
+    class="nav-link"
+>
+    <span class="nav-icon">⚙</span>
+    Administration
+</a>
 
+<?php endif; ?>
 
-            <a href="relocation.php" class="nav-link">
 
-                <span class="nav-icon">
-                    ⌖
-                </span>
+</nav>
 
-                Relocation Planner
 
-            </a>
+<div class="sidebar-user">
 
+<div class="sidebar-user-inner">
 
-            <a href="relocation_details.php" class="nav-link">
+<div class="sidebar-avatar">
 
-                <span class="nav-icon">
-                    ▣
-                </span>
-
-                Relocation Plans
-
-            </a>
-
-
-            <a href="reports.php" class="nav-link active">
-
-                <span class="nav-icon">
-                    ▤
-                </span>
-
-                Reports
-
-            </a>
-
-
-            <div class="nav-section">
-                Information
-            </div>
-
-
-            <a href="about.php" class="nav-link">
-
-                <span class="nav-icon">
-                    ⓘ
-                </span>
-
-                About
-
-            </a>
-
-
-            <a href="contact.php" class="nav-link">
-
-                <span class="nav-icon">
-                    ✉
-                </span>
-
-                Contact
-
-            </a>
-
-        </nav>
-
-    </aside>
-
-
-    <!-- MAIN -->
-
-    <main class="main">
-
-
-        <!-- TOPBAR -->
-
-        <header class="topbar">
-
-            <div>
-
-                <div class="page-title">
-                    Reports
-                </div>
-
-                <div class="page-subtitle">
-                    Generate disaster risk assessment reports
-                </div>
-
-            </div>
-
-
-            <div class="topbar-right">
-
-                <div class="status">
-
-                    <span class="status-dot"></span>
-
-                    System Online
-
-                </div>
-
-                <div>
-                    🔔
-                </div>
-
-                <div>
-                    <strong>Admin</strong>
-                </div>
-
-            </div>
-
-        </header>
-
-
-        <!-- CONTENT -->
-
-        <section class="reports-page">
-
-
-            <div class="page-header">
-
-                <div>
-
-                    <h1>
-                        Risk Assessment Reports
-                    </h1>
-
-                    <p>
-                        Generate a detailed risk report for a registered habitation.
-                    </p>
-
-                </div>
-
-            </div>
-
-
-            <!-- SELECT HABITATION -->
-
-            <div class="card report-controls">
-
-                <div class="control-group">
-
-                    <label for="habitationSelect">
-                        Select Habitation
-                    </label>
-
-                    <select
-                        id="habitationSelect"
-                        class="report-select"
-                    >
-
-                        <option value="">
-                            Loading habitations...
-                        </option>
-
-                    </select>
-
-                </div>
-
-
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    onclick="generateReport()"
-                >
-                    Generate Report
-                </button>
-
-            </div>
-
-
-            <!-- REPORT -->
-
-            <div
-                id="reportContainer"
-                class="report-card"
-            >
-
-                <div class="empty-report">
-
-                    <h3>
-                        No Report Generated
-                    </h3>
-
-                    <p>
-                        Select a habitation and click
-                        <strong>Generate Report</strong>.
-                    </p>
-
-                </div>
-
-            </div>
-
-
-        </section>
-
-    </main>
+<?= strtoupper(
+    substr(
+        $user["name"] ?? "A",
+        0,
+        1
+    )
+) ?>
 
 </div>
 
 
-<script>
+<div class="sidebar-user-info">
 
-let habitations = [];
+<div class="sidebar-user-name">
 
-let selectedHabitation = null;
+<?= htmlspecialchars(
+    $user["name"] ?? "Administrator"
+) ?>
 
+</div>
 
-/*
- * Load habitations
- */
 
-document.addEventListener(
-    "DOMContentLoaded",
-    loadHabitations
-);
+<div class="sidebar-user-role">
 
+<?= htmlspecialchars(
+    $user["role"] ?? "USER"
+) ?>
 
-function loadHabitations() {
+</div>
 
-    fetch("../api/get_habitations.php")
+</div>
 
-        .then(response => response.json())
 
-        .then(data => {
+<a
+    href="../logout.php"
+    class="sidebar-logout"
+    title="Logout"
+>
+    ⎋
+</a>
 
-            if (!data.success) {
+</div>
 
-                throw new Error(
-                    "Unable to load habitations"
-                );
+</div>
 
-            }
+</aside>
 
-            habitations =
-                data.data || [];
 
+<!-- =====================================================
+     MAIN
+     ===================================================== -->
 
-            const select =
-                document.getElementById(
-                    "habitationSelect"
-                );
+<main class="main">
 
 
-            select.innerHTML = `
-                <option value="">
-                    Select a habitation
-                </option>
-            `;
+<header class="topbar">
 
+<div>
 
-            habitations.forEach(habitation => {
+<div class="page-title">
+    Reports
+</div>
 
-                const option =
-                    document.createElement("option");
+<div class="page-subtitle">
+    Disaster risk and safe relocation overview
+</div>
 
-                option.value =
-                    habitation.id;
+</div>
 
-                option.textContent =
-                    habitation.name +
-                    " — " +
-                    habitation.district;
 
-                select.appendChild(option);
+<div class="topbar-right">
 
-            });
+<div class="status">
 
-        })
+<span class="status-dot"></span>
 
-        .catch(error => {
+System Operational
 
-            console.error(error);
+</div>
 
-            document.getElementById(
-                "habitationSelect"
-            ).innerHTML = `
-                <option value="">
-                    Failed to load habitations
-                </option>
-            `;
+</div>
 
-        });
+</header>
 
-}
 
+<div class="content">
 
-/*
- * Generate report
- */
 
-function generateReport() {
+<!-- PAGE HEADER -->
 
-    const select =
-        document.getElementById(
-            "habitationSelect"
-        );
+<div class="report-header">
 
 
-    const habitationId =
-        select.value;
+<div class="report-heading">
 
+<h1>
+    Risk & Relocation Reports
+</h1>
 
-    if (!habitationId) {
+<p>
+    Generate a consolidated overview of habitation risk,
+    population vulnerability and relocation planning.
+</p>
 
-        alert(
-            "Please select a habitation first."
-        );
+</div>
 
-        return;
 
-    }
+<div class="report-actions">
 
+<button
+    type="button"
+    class="btn btn-secondary"
+    onclick="window.print()"
+>
+    🖨 Print Report
+</button>
 
-    selectedHabitation =
-        habitations.find(
-            habitation =>
-                String(habitation.id) ===
-                String(habitationId)
-        );
+</div>
 
 
-    if (!selectedHabitation) {
+</div>
 
-        return;
 
-    }
+<!-- =====================================================
+     REPORT DOCUMENT
+     ===================================================== -->
 
+<div class="report-document">
 
-    const container =
-        document.getElementById(
-            "reportContainer"
-        );
 
+<!-- BRAND -->
 
-    container.innerHTML = `
+<div class="report-brand">
 
-        <div class="loading">
 
-            Loading risk assessment...
+<div class="brand-left">
 
-        </div>
 
-    `;
+<div class="brand-logo">
+    R
+</div>
 
 
-    fetch(
-        "../api/get_risk_assessment.php?habitation_id="
-        +
-        encodeURIComponent(habitationId)
-    )
+<div>
 
-        .then(response => {
+<div class="brand-name">
+    RakshakGIS
+</div>
 
-            if (response.status === 404) {
+<div class="brand-subtitle">
+    Disaster Risk & Safe Relocation
+</div>
 
-                return {
-                    success: false,
-                    notAssessed: true
-                };
+</div>
 
-            }
 
-            return response.json();
+</div>
 
-        })
 
-        .then(data => {
+<div class="report-meta">
 
-            if (
-                data.notAssessed ||
-                !data.success
-            ) {
+<strong>
+    RISK ASSESSMENT REPORT
+</strong>
 
-                showNotAssessedReport();
+<br>
 
-                return;
+Generated:
+<?= date("d M Y, h:i A") ?>
 
-            }
+<br>
 
+Prepared for:
+<?= htmlspecialchars(
+    $user["name"] ?? "System Administrator"
+) ?>
 
-            renderReport(
-                selectedHabitation,
-                data.data
-            );
+</div>
 
-        })
 
-        .catch(error => {
+</div>
 
-            console.error(error);
 
-            container.innerHTML = `
+<!-- TITLE -->
 
-                <div class="empty-report">
+<div class="report-title">
 
-                    <h3>
-                        Unable to generate report
-                    </h3>
+<h2>
+    Disaster Risk & Relocation Assessment
+</h2>
 
-                    <p>
-                        Please check the risk assessment API.
-                    </p>
+<p>
+    Consolidated system report based on the latest
+    available database records.
+</p>
 
-                </div>
+</div>
 
-            `;
 
-        });
+<!-- =====================================================
+     SUMMARY
+     ===================================================== -->
 
-}
+<div class="report-summary">
 
 
-/*
- * Not assessed
- */
+<div class="report-stat">
 
-function showNotAssessedReport() {
+<div class="report-stat-label">
+    Total Habitations
+</div>
 
-    const container =
-        document.getElementById(
-            "reportContainer"
-        );
+<div class="report-stat-value">
 
+<?= number_format(
+    (int)
+    $habitationSummary["total"]
+) ?>
 
-    container.innerHTML = `
+</div>
 
-        <div class="empty-report">
+</div>
 
-            <h3>
-                Risk Assessment Not Available
-            </h3>
 
-            <p>
-                This habitation has not been assessed yet.
-            </p>
+<div class="report-stat">
 
-            <br>
+<div class="report-stat-label">
+    Total Population
+</div>
 
-            <a
-                href="risk_assessment.php"
-                class="btn btn-primary"
-            >
-                Assess Risk
-            </a>
+<div class="report-stat-value">
 
-        </div>
+<?= number_format(
+    (int)
+    $habitationSummary["population"]
+) ?>
 
-    `;
+</div>
 
-}
+</div>
 
 
-/*
- * Render report
- */
+<div class="report-stat">
 
-function renderReport(
-    habitation,
-    risk
-) {
+<div class="report-stat-label">
+    High Risk Habitations
+</div>
 
-    const container =
-        document.getElementById(
-            "reportContainer"
-        );
+<div
+    class="report-stat-value"
+    style="color:#dc2626;"
+>
 
+<?= number_format(
+    (int)
+    $riskSummary["high"]
+) ?>
 
-    const riskScore =
-        parseFloat(
-            risk.risk_score || 0
-        );
+</div>
 
+</div>
 
-    const riskLevel =
-        (
-            risk.risk_level ||
-            "NOT ASSESSED"
-        ).toUpperCase();
 
+<div class="report-stat">
 
-    let riskClass =
-        "risk-none";
+<div class="report-stat-label">
+    Red Zone Habitations
+</div>
 
+<div
+    class="report-stat-value"
+    style="color:#b91c1c;"
+>
 
-    if (riskLevel === "HIGH") {
+<?= number_format(
+    (int)
+    $riskSummary["red_zone"]
+) ?>
 
-        riskClass =
-            "risk-high";
+</div>
 
-    }
-    else if (riskLevel === "MEDIUM") {
+</div>
 
-        riskClass =
-            "risk-medium";
 
-    }
-    else if (riskLevel === "LOW") {
+</div>
 
-        riskClass =
-            "risk-low";
 
-    }
+<!-- =====================================================
+     RISK OVERVIEW
+     ===================================================== -->
 
+<div class="report-section">
 
-    const redZone =
-        Number(risk.red_zone) === 1 ||
-        risk.red_zone === "1" ||
-        risk.red_zone === "YES";
 
+<div class="report-section-title">
+    Risk Overview
+</div>
 
-    const priority =
-        risk.relocation_priority ||
-        "—";
 
+<div class="risk-overview">
 
-    container.innerHTML = `
 
-        <div class="report-header">
+<div class="risk-bars">
 
-            <div class="report-title">
 
-                <h2>
-                    Disaster Risk Assessment Report
-                </h2>
+<div class="risk-row">
 
-                <p>
-                    RakshakGIS • Generated report
-                </p>
+<div class="risk-label">
+    High
+</div>
 
-            </div>
+<div class="risk-track">
 
+<div class="risk-fill risk-fill-high"></div>
 
-            <div class="report-actions">
+</div>
 
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    onclick="window.print()"
-                >
-                    Print / Save PDF
-                </button>
+<div class="risk-count">
+    <?= $riskSummary["high"] ?>
+</div>
 
-            </div>
+</div>
 
-        </div>
 
+<div class="risk-row">
 
-        <div class="report-body">
+<div class="risk-label">
+    Medium
+</div>
 
+<div class="risk-track">
 
-            <!-- HABITATION INFORMATION -->
+<div class="risk-fill risk-fill-medium"></div>
 
-            <div class="report-section">
+</div>
 
-                <h3>
-                    Habitation Information
-                </h3>
+<div class="risk-count">
+    <?= $riskSummary["medium"] ?>
+</div>
 
+</div>
 
-                <div class="report-grid">
 
+<div class="risk-row">
 
-                    <div class="report-info">
+<div class="risk-label">
+    Low
+</div>
 
-                        <div class="report-info-label">
-                            Habitation
-                        </div>
+<div class="risk-track">
 
-                        <div class="report-info-value">
-                            ${escapeHtml(
-                                habitation.name
-                            )}
-                        </div>
+<div class="risk-fill risk-fill-low"></div>
 
-                    </div>
+</div>
 
+<div class="risk-count">
+    <?= $riskSummary["low"] ?>
+</div>
 
-                    <div class="report-info">
+</div>
 
-                        <div class="report-info-label">
-                            District
-                        </div>
 
-                        <div class="report-info-value">
-                            ${escapeHtml(
-                                habitation.district
-                            )}
-                        </div>
+</div>
 
-                    </div>
 
+<div class="info-grid">
 
-                    <div class="report-info">
 
-                        <div class="report-info-label">
-                            State
-                        </div>
+<div class="info-card">
 
-                        <div class="report-info-value">
-                            ${escapeHtml(
-                                habitation.state
-                            )}
-                        </div>
+<div class="info-label">
+    Assessed Habitations
+</div>
 
-                    </div>
+<div class="info-value">
+    <?= $totalAssessed ?>
+</div>
 
+<div class="info-description">
+    Habitations with a latest risk assessment
+</div>
 
-                    <div class="report-info">
+</div>
 
-                        <div class="report-info-label">
-                            Population
-                        </div>
 
-                        <div class="report-info-value">
-                            ${Number(
-                                habitation.population || 0
-                            ).toLocaleString()}
-                        </div>
+<div class="info-card">
 
-                    </div>
+<div class="info-label">
+    High-Risk Population
+</div>
 
+<div
+    class="info-value"
+    style="color:#dc2626;"
+>
 
-                    <div class="report-info">
+<?= number_format(
+    $highRiskPopulation
+) ?>
 
-                        <div class="report-info-label">
-                            Latitude
-                        </div>
+</div>
 
-                        <div class="report-info-value">
-                            ${escapeHtml(
-                                habitation.latitude
-                            )}
-                        </div>
+<div class="info-description">
+    Population living in high-risk habitations
+</div>
 
-                    </div>
+</div>
 
 
-                    <div class="report-info">
+<div class="info-card">
 
-                        <div class="report-info-label">
-                            Longitude
-                        </div>
+<div class="info-label">
+    Red Zones
+</div>
 
-                        <div class="report-info-value">
-                            ${escapeHtml(
-                                habitation.longitude
-                            )}
-                        </div>
+<div
+    class="info-value"
+    style="color:#b91c1c;"
+>
 
-                    </div>
+<?= number_format(
+    (int)
+    $riskSummary["red_zone"]
+) ?>
 
-                </div>
+</div>
 
-            </div>
+<div class="info-description">
+    Habitations currently marked as red zone
+</div>
 
+</div>
 
-            <!-- RISK SUMMARY -->
 
-            <div class="report-section">
+</div>
 
-                <h3>
-                    Risk Assessment Summary
-                </h3>
 
+</div>
 
-                <div class="risk-score-box">
+</div>
 
-                    <div>
 
-                        <div class="report-info-label">
-                            Overall Risk Score
-                        </div>
+<!-- =====================================================
+     HIGH RISK HABITATIONS
+     ===================================================== -->
 
-                        <div class="risk-score">
-                            ${riskScore.toFixed(2)}
-                        </div>
+<div class="report-section">
 
-                    </div>
 
+<div class="report-section-title">
+    High-Risk Habitations
+</div>
 
-                    <div>
 
-                        <span
-                            class="risk-badge ${riskClass}"
-                        >
-                            ${escapeHtml(
-                                riskLevel
-                            )}
-                        </span>
+<?php if (empty($highRiskHabitations)): ?>
 
-                    </div>
 
-                </div>
+<div class="empty-report">
 
+No high-risk habitations were found.
 
-                ${
-                    redZone
-                    ?
-                    `
-                    <div class="red-zone">
-                        🔴 RED ZONE IDENTIFIED
-                    </div>
-                    `
-                    :
-                    `
-                    <div
-                        class="notes-box"
-                        style="margin-top:12px"
-                    >
-                        Red Zone:
-                        <strong>Not identified</strong>
-                    </div>
-                    `
-                }
+</div>
 
 
-                <div class="priority-box">
+<?php else: ?>
 
-                    Relocation Priority:
-                    ${escapeHtml(priority)}
 
-                </div>
+<div class="table-wrapper">
 
-            </div>
 
+<table class="report-table">
 
-            <!-- HAZARD FACTORS -->
 
-            <div class="report-section">
+<thead>
 
-                <h3>
-                    Hazard Factors
-                </h3>
+<tr>
 
+<th>
+    Habitation
+</th>
 
-                ${createFactor(
-                    "Flood Risk",
-                    risk.flood_score
-                )}
+<th>
+    District
+</th>
 
+<th>
+    Population
+</th>
 
-                ${createFactor(
-                    "Landslide Risk",
-                    risk.landslide_score
-                )}
+<th>
+    Risk Score
+</th>
 
+<th>
+    Risk Level
+</th>
 
-                ${createFactor(
-                    "Hazard History",
-                    risk.hazard_history_score
-                )}
+<th>
+    Red Zone
+</th>
 
+<th>
+    Priority
+</th>
 
-                ${createFactor(
-                    "Population Vulnerability",
-                    risk.vulnerability_score
-                )}
+</tr>
 
-            </div>
+</thead>
 
 
-            <!-- NOTES -->
+<tbody>
 
-            <div class="report-section">
 
-                <h3>
-                    Assessment Notes
-                </h3>
+<?php foreach (
+    $highRiskHabitations
+    as $habitation
+): ?>
 
 
-                <div class="notes-box">
+<tr>
 
-                    ${
-                        risk.assessment_notes
-                        ?
-                        escapeHtml(
-                            risk.assessment_notes
-                        )
-                        :
-                        "No additional assessment notes recorded."
-                    }
 
-                </div>
+<td>
 
-            </div>
+<strong>
 
+<?= htmlspecialchars(
+    $habitation["name"]
+) ?>
 
-            <!-- RELOCATION -->
+</strong>
 
-            <div class="report-section">
+</td>
 
-                <h3>
-                    Relocation Planning
-                </h3>
 
+<td>
 
-                <div class="notes-box">
+<?= htmlspecialchars(
+    $habitation["district"]
+) ?>
 
-                    ${
-                        redZone
-                        ?
-                        `
-                        This habitation has been identified
-                        for relocation planning based on the
-                        current risk assessment.
-                        `
-                        :
-                        `
-                        Relocation is not currently flagged
-                        as immediate based on this assessment.
-                        `
-                    }
+</td>
 
-                    <br><br>
 
-                    <a
-                        href="relocation.php?id=${habitation.id}"
-                        class="btn btn-primary"
-                    >
-                        Open Relocation Planner
-                    </a>
+<td>
 
-                </div>
+<?= number_format(
+    (int)
+    $habitation["population"]
+) ?>
 
-            </div>
+</td>
 
 
-            <div
-                style="
-                    border-top:1px solid #e2e8f0;
-                    padding-top:20px;
-                    color:#64748b;
-                    font-size:13px;
-                "
-            >
+<td>
 
-                Report generated by RakshakGIS.
+<strong>
 
-                <br>
+<?= number_format(
+    (float)
+    $habitation["risk_score"],
+    1
+) ?>
 
-                This prototype report is based on the
-                registered habitation and assessment data
-                stored in the system.
+</strong>
 
-            </div>
+</td>
 
 
-        </div>
+<td>
 
-    `;
+<span
+    class="risk-badge <?= riskClass(
+        $habitation["risk_level"]
+    ) ?>"
+>
 
-}
+<?= htmlspecialchars(
+    $habitation["risk_level"]
+) ?>
 
+</span>
 
-/*
- * Create factor bar
- */
+</td>
 
-function createFactor(
-    name,
-    value
-) {
 
-    const numericValue =
-        Math.max(
-            0,
-            Math.min(
-                100,
-                parseFloat(value || 0)
-            )
-        );
+<td>
 
+<?= (int)
+    $habitation["red_zone"] === 1
+        ? "YES"
+        : "NO"
+?>
 
-    return `
+</td>
 
-        <div class="factor-row">
 
-            <div class="factor-top">
+<td>
 
-                <span class="factor-name">
-                    ${name}
-                </span>
+<strong>
 
-                <span class="factor-value">
-                    ${numericValue}
-                </span>
+<?= htmlspecialchars(
+    $habitation[
+        "relocation_priority"
+    ]
+) ?>
 
-            </div>
+</strong>
 
+</td>
 
-            <div class="factor-bar">
 
-                <div
-                    class="factor-fill"
-                    style="width:${numericValue}%"
-                ></div>
+</tr>
 
-            </div>
 
-        </div>
+<?php endforeach; ?>
 
-    `;
 
-}
+</tbody>
 
+</table>
 
-/*
- * Escape HTML
- */
 
-function escapeHtml(value) {
+</div>
 
-    const div =
-        document.createElement("div");
 
-    div.textContent =
-        value ?? "";
+<?php endif; ?>
 
-    return div.innerHTML;
 
-}
+</div>
 
-</script>
+
+<!-- =====================================================
+     RELOCATION OVERVIEW
+     ===================================================== -->
+
+<div class="report-section">
+
+
+<div class="report-section-title">
+    Relocation Overview
+</div>
+
+
+<div class="info-grid">
+
+
+<div class="info-card">
+
+<div class="info-label">
+    Total Plans
+</div>
+
+<div class="info-value">
+    <?= $relocationSummary["total"] ?>
+</div>
+
+</div>
+
+
+<div class="info-card">
+
+<div class="info-label">
+    Approved
+</div>
+
+<div
+    class="info-value"
+    style="color:#2563eb;"
+>
+
+<?= $relocationSummary["approved"] ?>
+
+</div>
+
+</div>
+
+
+<div class="info-card">
+
+<div class="info-label">
+    In Progress
+</div>
+
+<div
+    class="info-value"
+    style="color:#d97706;"
+>
+
+<?= $relocationSummary["in_progress"] ?>
+
+</div>
+
+</div>
+
+
+<div class="info-card">
+
+<div class="info-label">
+    Completed
+</div>
+
+<div
+    class="info-value"
+    style="color:#16a34a;"
+>
+
+<?= $relocationSummary["completed"] ?>
+
+</div>
+
+</div>
+
+
+<div class="info-card">
+
+<div class="info-label">
+    Available Relocation Capacity
+</div>
+
+<div
+    class="info-value"
+    style="color:#16a34a;"
+>
+
+<?= number_format(
+    (int)
+    $siteSummary["available"]
+) ?>
+
+</div>
+
+<div class="info-description">
+    Current available capacity across all sites
+</div>
+
+</div>
+
+
+<div class="info-card">
+
+<div class="info-label">
+    Total Relocation Sites
+</div>
+
+<div class="info-value">
+
+<?= number_format(
+    (int)
+    $siteSummary["total"]
+) ?>
+
+</div>
+
+<div class="info-description">
+    Registered safe relocation locations
+</div>
+
+</div>
+
+
+</div>
+
+</div>
+
+
+<!-- =====================================================
+     RELOCATION SITES
+     ===================================================== -->
+
+<div class="report-section">
+
+
+<div class="report-section-title">
+    Relocation Site Capacity
+</div>
+
+
+<?php if (empty($relocationSites)): ?>
+
+
+<div class="empty-report">
+
+No relocation sites have been registered.
+
+</div>
+
+
+<?php else: ?>
+
+
+<div class="table-wrapper">
+
+
+<table class="report-table">
+
+
+<thead>
+
+<tr>
+
+<th>
+    Site
+</th>
+
+<th>
+    District
+</th>
+
+<th>
+    Total Capacity
+</th>
+
+<th>
+    Occupied
+</th>
+
+<th>
+    Available
+</th>
+
+<th>
+    Safety
+</th>
+
+</tr>
+
+</thead>
+
+
+<tbody>
+
+
+<?php foreach (
+    $relocationSites
+    as $site
+): ?>
+
+
+<?php
+
+$totalCapacity =
+    (int)
+    $site["total_capacity"];
+
+$occupiedCapacity =
+    (int)
+    $site["occupied_capacity"];
+
+$availableCapacity =
+    max(
+        0,
+        $totalCapacity
+        -
+        $occupiedCapacity
+    );
+
+?>
+
+
+<tr>
+
+
+<td>
+
+<strong>
+
+<?= htmlspecialchars(
+    $site["site_name"]
+) ?>
+
+</strong>
+
+</td>
+
+
+<td>
+
+<?= htmlspecialchars(
+    $site["district"]
+) ?>
+
+</td>
+
+
+<td>
+
+<?= number_format(
+    $totalCapacity
+) ?>
+
+</td>
+
+
+<td>
+
+<?= number_format(
+    $occupiedCapacity
+) ?>
+
+</td>
+
+
+<td>
+
+<span class="capacity-available">
+
+<?= number_format(
+    $availableCapacity
+) ?>
+
+</span>
+
+</td>
+
+
+<td>
+
+<span
+    class="risk-badge <?= riskClass(
+        $site["safety_level"]
+    ) ?>"
+>
+
+<?= htmlspecialchars(
+    $site["safety_level"]
+) ?>
+
+</span>
+
+</td>
+
+
+</tr>
+
+
+<?php endforeach; ?>
+
+
+</tbody>
+
+</table>
+
+
+</div>
+
+
+<?php endif; ?>
+
+
+</div>
+
+
+<!-- =====================================================
+     FOOTER
+     ===================================================== -->
+
+<div class="report-footer">
+
+
+<div>
+
+RakshakGIS · Disaster Risk & Safe Relocation
+
+</div>
+
+
+<div>
+
+Generated from current system data
+
+</div>
+
+
+</div>
+
+
+</div>
+
+
+</div>
+
+
+</main>
+
+
+</div>
 
 
 </body>

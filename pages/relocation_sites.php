@@ -16,135 +16,124 @@ $error = "";
 
 /*
 |--------------------------------------------------------------------------
-| DELETE HABITATION
+| ADD RELOCATION SITE
 |--------------------------------------------------------------------------
 */
 
-if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["delete_id"])) {
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["add_site"])) {
 
     if (($user["role"] ?? "") !== "ADMIN") {
 
-        $error = "Only administrators can delete habitations.";
+        $error = "Only administrators can add relocation sites.";
 
     } else {
 
-        $deleteId = (int) $_POST["delete_id"];
-
-        if ($deleteId > 0) {
-
-            $stmt = $conn->prepare("
-                DELETE FROM habitations
-                WHERE id = ?
-            ");
-
-            $stmt->bind_param("i", $deleteId);
-
-            if ($stmt->execute()) {
-
-                $message = "Habitation deleted successfully.";
-
-            } else {
-
-                $error = "Unable to delete the habitation.";
-            }
-
-            $stmt->close();
-        }
-    }
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| ADD HABITATION
-|--------------------------------------------------------------------------
-*/
-
-if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["add_habitation"])) {
-
-    if (($user["role"] ?? "") !== "ADMIN") {
-
-        $error = "Only administrators can add habitations.";
-
-    } else {
-
-        $name = trim($_POST["name"] ?? "");
+        $siteName = trim($_POST["site_name"] ?? "");
         $district = trim($_POST["district"] ?? "");
-        $state = trim($_POST["state"] ?? "Maharashtra");
-
-        $population = (int) ($_POST["population"] ?? 0);
 
         $latitude = trim($_POST["latitude"] ?? "");
         $longitude = trim($_POST["longitude"] ?? "");
 
-        $floodRisk = (float) ($_POST["flood_risk"] ?? 0);
-        $landslideRisk = (float) ($_POST["landslide_risk"] ?? 0);
-        $hazardHistory = (float) ($_POST["hazard_history"] ?? 0);
-        $populationVulnerability = (float) ($_POST["population_vulnerability"] ?? 0);
+        $totalCapacity = (int) ($_POST["total_capacity"] ?? 0);
+        $occupiedCapacity = (int) ($_POST["occupied_capacity"] ?? 0);
+
+        $safetyLevel = strtoupper(
+            trim($_POST["safety_level"] ?? "LOW")
+        );
+
+        $distance = trim(
+            $_POST["distance_from_habitation"] ?? ""
+        );
+
+        $facilities = trim(
+            $_POST["facilities"] ?? ""
+        );
 
 
-        if ($name === "" || $district === "") {
+        if ($siteName === "" || $district === "") {
 
-            $error = "Habitation name and district are required.";
+            $error = "Site name and district are required.";
 
-        } elseif ($population < 0) {
+        } elseif ($totalCapacity < 0 || $occupiedCapacity < 0) {
 
-            $error = "Population cannot be negative.";
+            $error = "Capacity cannot be negative.";
+
+        } elseif ($occupiedCapacity > $totalCapacity) {
+
+            $error =
+                "Occupied capacity cannot be greater than total capacity.";
+
+        } elseif (
+            !in_array(
+                $safetyLevel,
+                ["LOW", "MEDIUM", "HIGH"],
+                true
+            )
+        ) {
+
+            $error = "Invalid safety level.";
 
         } else {
 
             $latitudeValue =
                 $latitude === ""
-                ? null
-                : (float) $latitude;
+                    ? null
+                    : (float) $latitude;
 
             $longitudeValue =
                 $longitude === ""
-                ? null
-                : (float) $longitude;
+                    ? null
+                    : (float) $longitude;
+
+            $distanceValue =
+                $distance === ""
+                    ? null
+                    : (float) $distance;
 
 
             $stmt = $conn->prepare("
-                INSERT INTO habitations
+                INSERT INTO relocation_sites
                 (
-                    name,
+                    site_name,
                     district,
-                    state,
-                    population,
                     latitude,
                     longitude,
-                    flood_risk,
-                    landslide_risk,
-                    hazard_history,
-                    population_vulnerability
+                    total_capacity,
+                    occupied_capacity,
+                    safety_level,
+                    distance_from_habitation,
+                    facilities
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
 
 
             $stmt->bind_param(
-                "sssidddddd",
-                $name,
+                "ssddiidss",
+                $siteName,
                 $district,
-                $state,
-                $population,
                 $latitudeValue,
                 $longitudeValue,
-                $floodRisk,
-                $landslideRisk,
-                $hazardHistory,
-                $populationVulnerability
+                $totalCapacity,
+                $occupiedCapacity,
+                $safetyLevel,
+                $distanceValue,
+                $facilities
             );
 
 
             if ($stmt->execute()) {
 
-                $message = "Habitation added successfully.";
+                $message =
+                    "Relocation site added successfully.";
 
             } else {
 
-                $error = "Unable to add habitation.";
+                $error =
+                    "Unable to add relocation site: " .
+                    $stmt->error;
             }
+
 
             $stmt->close();
         }
@@ -154,99 +143,267 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["add_habitation"])) {
 
 /*
 |--------------------------------------------------------------------------
-| UPDATE HABITATION
+| UPDATE RELOCATION SITE
 |--------------------------------------------------------------------------
 */
 
-if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["update_habitation"])) {
+if (
+    $_SERVER["REQUEST_METHOD"] === "POST"
+    && isset($_POST["update_site"])
+) {
 
     if (($user["role"] ?? "") !== "ADMIN") {
 
-        $error = "Only administrators can edit habitations.";
+        $error = "Only administrators can edit relocation sites.";
 
     } else {
 
         $id = (int) ($_POST["id"] ?? 0);
 
-        $name = trim($_POST["name"] ?? "");
+        $siteName = trim($_POST["site_name"] ?? "");
         $district = trim($_POST["district"] ?? "");
-        $state = trim($_POST["state"] ?? "Maharashtra");
-
-        $population = (int) ($_POST["population"] ?? 0);
 
         $latitude = trim($_POST["latitude"] ?? "");
         $longitude = trim($_POST["longitude"] ?? "");
 
-        $floodRisk = (float) ($_POST["flood_risk"] ?? 0);
-        $landslideRisk = (float) ($_POST["landslide_risk"] ?? 0);
-        $hazardHistory = (float) ($_POST["hazard_history"] ?? 0);
-        $populationVulnerability = (float) ($_POST["population_vulnerability"] ?? 0);
+        $totalCapacity = (int) ($_POST["total_capacity"] ?? 0);
+        $occupiedCapacity = (int) ($_POST["occupied_capacity"] ?? 0);
+
+        $safetyLevel = strtoupper(
+            trim($_POST["safety_level"] ?? "LOW")
+        );
+
+        $distance = trim(
+            $_POST["distance_from_habitation"] ?? ""
+        );
+
+        $facilities = trim(
+            $_POST["facilities"] ?? ""
+        );
 
 
         if ($id <= 0) {
 
-            $error = "Invalid habitation.";
+            $error = "Invalid relocation site.";
 
-        } elseif ($name === "" || $district === "") {
+        } elseif ($siteName === "" || $district === "") {
 
-            $error = "Habitation name and district are required.";
+            $error = "Site name and district are required.";
+
+        } elseif ($totalCapacity < 0 || $occupiedCapacity < 0) {
+
+            $error = "Capacity cannot be negative.";
+
+        } elseif ($occupiedCapacity > $totalCapacity) {
+
+            $error =
+                "Occupied capacity cannot be greater than total capacity.";
+
+        } elseif (
+            !in_array(
+                $safetyLevel,
+                ["LOW", "MEDIUM", "HIGH"],
+                true
+            )
+        ) {
+
+            $error = "Invalid safety level.";
 
         } else {
 
             $latitudeValue =
                 $latitude === ""
-                ? null
-                : (float) $latitude;
+                    ? null
+                    : (float) $latitude;
 
             $longitudeValue =
                 $longitude === ""
-                ? null
-                : (float) $longitude;
+                    ? null
+                    : (float) $longitude;
+
+            $distanceValue =
+                $distance === ""
+                    ? null
+                    : (float) $distance;
 
 
             $stmt = $conn->prepare("
-                UPDATE habitations
+                UPDATE relocation_sites
 
                 SET
-                    name = ?,
+                    site_name = ?,
                     district = ?,
-                    state = ?,
-                    population = ?,
                     latitude = ?,
                     longitude = ?,
-                    flood_risk = ?,
-                    landslide_risk = ?,
-                    hazard_history = ?,
-                    population_vulnerability = ?
+                    total_capacity = ?,
+                    occupied_capacity = ?,
+                    safety_level = ?,
+                    distance_from_habitation = ?,
+                    facilities = ?
 
                 WHERE id = ?
             ");
 
 
             $stmt->bind_param(
-                "sssiddddddi",
-                $name,
+                "ssddiids si",
+                $siteName,
                 $district,
-                $state,
-                $population,
                 $latitudeValue,
                 $longitudeValue,
-                $floodRisk,
-                $landslideRisk,
-                $hazardHistory,
-                $populationVulnerability,
+                $totalCapacity,
+                $occupiedCapacity,
+                $safetyLevel,
+                $distanceValue,
+                $facilities,
+                $id
+            );
+
+
+            /*
+             * Correct the bind type string without spaces.
+             */
+
+            $stmt->close();
+
+            $stmt = $conn->prepare("
+                UPDATE relocation_sites
+
+                SET
+                    site_name = ?,
+                    district = ?,
+                    latitude = ?,
+                    longitude = ?,
+                    total_capacity = ?,
+                    occupied_capacity = ?,
+                    safety_level = ?,
+                    distance_from_habitation = ?,
+                    facilities = ?
+
+                WHERE id = ?
+            ");
+
+
+            $stmt->bind_param(
+                "ssddiids si",
+                $siteName,
+                $district,
+                $latitudeValue,
+                $longitudeValue,
+                $totalCapacity,
+                $occupiedCapacity,
+                $safetyLevel,
+                $distanceValue,
+                $facilities,
+                $id
+            );
+
+            /*
+             * Rebuild with the exact mysqli type definition.
+             *
+             * s = string
+             * d = decimal
+             * i = integer
+             */
+
+            $stmt->close();
+
+            $stmt = $conn->prepare("
+                UPDATE relocation_sites
+
+                SET
+                    site_name = ?,
+                    district = ?,
+                    latitude = ?,
+                    longitude = ?,
+                    total_capacity = ?,
+                    occupied_capacity = ?,
+                    safety_level = ?,
+                    distance_from_habitation = ?,
+                    facilities = ?
+
+                WHERE id = ?
+            ");
+
+            $stmt->bind_param(
+                "ssddiidsdi",
+                $siteName,
+                $district,
+                $latitudeValue,
+                $longitudeValue,
+                $totalCapacity,
+                $occupiedCapacity,
+                $safetyLevel,
+                $distanceValue,
+                $facilities,
                 $id
             );
 
 
             if ($stmt->execute()) {
 
-                $message = "Habitation updated successfully.";
+                $message =
+                    "Relocation site updated successfully.";
 
             } else {
 
-                $error = "Unable to update habitation.";
+                $error =
+                    "Unable to update relocation site: " .
+                    $stmt->error;
             }
+
+
+            $stmt->close();
+        }
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| DELETE RELOCATION SITE
+|--------------------------------------------------------------------------
+*/
+
+if (
+    $_SERVER["REQUEST_METHOD"] === "POST"
+    && isset($_POST["delete_site"])
+) {
+
+    if (($user["role"] ?? "") !== "ADMIN") {
+
+        $error = "Only administrators can delete relocation sites.";
+
+    } else {
+
+        $deleteId = (int) $_POST["delete_site"];
+
+
+        if ($deleteId > 0) {
+
+            $stmt = $conn->prepare("
+                DELETE FROM relocation_sites
+                WHERE id = ?
+            ");
+
+            $stmt->bind_param(
+                "i",
+                $deleteId
+            );
+
+
+            if ($stmt->execute()) {
+
+                $message =
+                    "Relocation site deleted successfully.";
+
+            } else {
+
+                $error =
+                    "Unable to delete relocation site. " .
+                    "It may already be used by a relocation plan.";
+            }
+
 
             $stmt->close();
         }
@@ -260,41 +417,29 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["update_habitation"]))
 |--------------------------------------------------------------------------
 */
 
-$search = trim($_GET["search"] ?? "");
-
-$searchSql = "";
-$searchParam = "";
-
-if ($search !== "") {
-
-    $searchSql = "
-        WHERE
-            name LIKE ?
-            OR district LIKE ?
-            OR state LIKE ?
-    ";
-
-    $searchParam = "%" . $search . "%";
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| FETCH HABITATIONS
-|--------------------------------------------------------------------------
-*/
-
-$habitations = [];
+$search = trim(
+    $_GET["search"] ?? ""
+);
 
 
 if ($search !== "") {
+
+    $searchParam =
+        "%" . $search . "%";
+
 
     $stmt = $conn->prepare("
         SELECT *
-        FROM habitations
-        $searchSql
+        FROM relocation_sites
+
+        WHERE
+            site_name LIKE ?
+            OR district LIKE ?
+            OR facilities LIKE ?
+
         ORDER BY created_at DESC
     ");
+
 
     $stmt->bind_param(
         "sss",
@@ -302,6 +447,7 @@ if ($search !== "") {
         $searchParam,
         $searchParam
     );
+
 
     $stmt->execute();
 
@@ -311,17 +457,20 @@ if ($search !== "") {
 
     $result = $conn->query("
         SELECT *
-        FROM habitations
+        FROM relocation_sites
         ORDER BY created_at DESC
     ");
 }
+
+
+$sites = [];
 
 
 if ($result) {
 
     while ($row = $result->fetch_assoc()) {
 
-        $habitations[] = $row;
+        $sites[] = $row;
     }
 }
 
@@ -333,55 +482,60 @@ if (isset($stmt)) {
 
 /*
 |--------------------------------------------------------------------------
-| TOTAL POPULATION
+| SUMMARY
 |--------------------------------------------------------------------------
 */
 
-$totalPopulation = 0;
+$totalSites = count($sites);
 
-foreach ($habitations as $habitation) {
+$totalCapacity = 0;
+$occupiedCapacity = 0;
+$availableCapacity = 0;
 
-    $totalPopulation += (int) $habitation["population"];
+$highSafetySites = 0;
+
+
+foreach ($sites as $site) {
+
+    $total = (int) $site["total_capacity"];
+
+    $occupied = (int) $site["occupied_capacity"];
+
+    $available =
+        max(
+            0,
+            $total - $occupied
+        );
+
+
+    $totalCapacity += $total;
+
+    $occupiedCapacity += $occupied;
+
+    $availableCapacity += $available;
+
+
+    if ($site["safety_level"] === "HIGH") {
+        $highSafetySites++;
+    }
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| HELPER
+| HELPERS
 |--------------------------------------------------------------------------
 */
 
-function calculateRisk(array $habitation): float
-{
-    return (
-        (float) $habitation["flood_risk"] +
-        (float) $habitation["landslide_risk"] +
-        (float) $habitation["hazard_history"] +
-        (float) $habitation["population_vulnerability"]
-    ) / 4;
-}
-
-
-function getRiskLevel(float $score): string
-{
-    if ($score >= 70) {
-        return "HIGH";
-    }
-
-    if ($score >= 40) {
-        return "MEDIUM";
-    }
-
-    return "LOW";
-}
-
-
-function getRiskClass(string $level): string
+function safetyClass(string $level): string
 {
     return match ($level) {
-        "HIGH" => "badge-high",
-        "MEDIUM" => "badge-medium",
-        default => "badge-low"
+
+        "HIGH" => "safety-high",
+
+        "MEDIUM" => "safety-medium",
+
+        default => "safety-low"
     };
 }
 
@@ -400,7 +554,8 @@ function getRiskClass(string $level): string
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>Habitations | RakshakGIS</title>
+    <title>Relocation Sites | RakshakGIS</title>
+
 
     <link
         rel="stylesheet"
@@ -411,47 +566,50 @@ function getRiskClass(string $level): string
     <style>
 
         /* =========================================
-           HABITATIONS PAGE
+           RELOCATION SITES
            ========================================= */
 
-        .page-actions {
+        .site-header {
 
             display: flex;
-            align-items: center;
+
             justify-content: space-between;
 
-            gap: 15px;
+            align-items: flex-start;
+
+            gap: 20px;
 
             margin-bottom: 22px;
 
         }
 
 
-        .page-heading h1 {
+        .site-heading h1 {
 
             font-size: 24px;
+
             font-weight: 800;
 
         }
 
 
-        .page-heading p {
+        .site-heading p {
 
             margin-top: 5px;
 
-            color: var(--muted);
-
             font-size: 12px;
+
+            color: var(--muted);
 
         }
 
 
-        .habitation-summary {
+        .site-summary {
 
             display: grid;
 
             grid-template-columns:
-                repeat(3, 1fr);
+                repeat(4, 1fr);
 
             gap: 15px;
 
@@ -460,7 +618,7 @@ function getRiskClass(string $level): string
         }
 
 
-        .summary-card {
+        .site-stat {
 
             background: white;
 
@@ -473,7 +631,7 @@ function getRiskClass(string $level): string
         }
 
 
-        .summary-label {
+        .site-stat-label {
 
             font-size: 11px;
 
@@ -482,24 +640,40 @@ function getRiskClass(string $level): string
         }
 
 
-        .summary-value {
+        .site-stat-value {
 
-            font-size: 24px;
+            font-size: 25px;
 
             font-weight: 800;
 
-            margin-top: 6px;
+            margin-top: 5px;
 
         }
 
 
-        .toolbar {
+        .site-stat.available
+        .site-stat-value {
+
+            color: #16a34a;
+
+        }
+
+
+        .site-stat.safety
+        .site-stat-value {
+
+            color: #2563eb;
+
+        }
+
+
+        .site-toolbar {
 
             display: flex;
 
-            align-items: center;
-
             justify-content: space-between;
+
+            align-items: center;
 
             gap: 15px;
 
@@ -516,7 +690,7 @@ function getRiskClass(string $level): string
 
             width: 100%;
 
-            max-width: 430px;
+            max-width: 480px;
 
         }
 
@@ -531,9 +705,9 @@ function getRiskClass(string $level): string
 
             padding: 10px 13px;
 
-            font-family: inherit;
-
             font-size: 13px;
+
+            font-family: inherit;
 
             outline: none;
 
@@ -551,7 +725,7 @@ function getRiskClass(string $level): string
         }
 
 
-        .table-card {
+        .site-table-card {
 
             background: white;
 
@@ -564,27 +738,112 @@ function getRiskClass(string $level): string
         }
 
 
-        .habitation-name {
+        .site-name {
 
             font-weight: 700;
 
         }
 
 
-        .habitation-location {
-
-            color: var(--muted);
+        .site-location {
 
             font-size: 11px;
+
+            color: var(--muted);
 
             margin-top: 3px;
 
         }
 
 
-        .risk-mini {
+        .capacity-main {
 
-            font-weight: 700;
+            font-weight: 800;
+
+        }
+
+
+        .capacity-sub {
+
+            font-size: 10px;
+
+            color: var(--muted);
+
+            margin-top: 3px;
+
+        }
+
+
+        .capacity-bar {
+
+            width: 100%;
+
+            min-width: 80px;
+
+            height: 5px;
+
+            background: #e2e8f0;
+
+            border-radius: 99px;
+
+            margin-top: 7px;
+
+            overflow: hidden;
+
+        }
+
+
+        .capacity-fill {
+
+            height: 100%;
+
+            border-radius: 99px;
+
+            background: var(--primary);
+
+        }
+
+
+        .safety-badge {
+
+            display: inline-flex;
+
+            align-items: center;
+
+            padding: 5px 9px;
+
+            border-radius: 999px;
+
+            font-size: 10px;
+
+            font-weight: 800;
+
+        }
+
+
+        .safety-high {
+
+            background: #dcfce7;
+
+            color: #15803d;
+
+        }
+
+
+        .safety-medium {
+
+            background: #fef3c7;
+
+            color: #b45309;
+
+        }
+
+
+        .safety-low {
+
+            background: #fee2e2;
+
+            color: #b91c1c;
 
         }
 
@@ -593,7 +852,22 @@ function getRiskClass(string $level): string
 
             font-family: monospace;
 
+            font-size: 10px;
+
+            color: var(--muted);
+
+            white-space: nowrap;
+
+        }
+
+
+        .facility-list {
+
+            max-width: 220px;
+
             font-size: 11px;
+
+            line-height: 1.5;
 
             color: var(--muted);
 
@@ -650,22 +924,15 @@ function getRiskClass(string $level): string
         }
 
 
-        .alert {
-
-            margin-bottom: 18px;
-
-        }
-
-
-        /* Modal */
+        /* =========================================
+           MODAL
+           ========================================= */
 
         .modal {
 
             position: fixed;
 
             inset: 0;
-
-            background: rgba(15,23,42,0.55);
 
             display: none;
 
@@ -675,9 +942,12 @@ function getRiskClass(string $level): string
 
             padding: 20px;
 
-            z-index: 5000;
+            background:
+                rgba(15,23,42,0.55);
 
             backdrop-filter: blur(3px);
+
+            z-index: 5000;
 
         }
 
@@ -691,8 +961,6 @@ function getRiskClass(string $level): string
 
         .modal-card {
 
-            background: white;
-
             width: 100%;
 
             max-width: 720px;
@@ -700,6 +968,8 @@ function getRiskClass(string $level): string
             max-height: 90vh;
 
             overflow-y: auto;
+
+            background: white;
 
             border-radius: 15px;
 
@@ -746,11 +1016,11 @@ function getRiskClass(string $level): string
 
             background: #f1f5f9;
 
-            color: var(--muted);
-
             cursor: pointer;
 
             font-size: 18px;
+
+            color: var(--muted);
 
         }
 
@@ -777,36 +1047,23 @@ function getRiskClass(string $level): string
         }
 
 
-        .range-value {
+        .facility-help {
 
-            color: var(--primary);
+            font-size: 10px;
 
-            font-weight: 700;
+            color: var(--muted);
+
+            margin-top: 5px;
 
         }
 
 
-        @media (max-width: 900px) {
+        @media (max-width: 1000px) {
 
-            .habitation-summary {
+            .site-summary {
 
-                grid-template-columns: 1fr;
-
-            }
-
-            .page-actions {
-
-                align-items: flex-start;
-
-                flex-direction: column;
-
-            }
-
-            .toolbar {
-
-                flex-direction: column;
-
-                align-items: stretch;
+                grid-template-columns:
+                    repeat(2, 1fr);
 
             }
 
@@ -815,7 +1072,16 @@ function getRiskClass(string $level): string
 
         @media (max-width: 700px) {
 
-            .form-grid {
+            .site-header,
+            .site-toolbar {
+
+                flex-direction: column;
+
+                align-items: stretch;
+
+            }
+
+            .site-summary {
 
                 grid-template-columns: 1fr;
 
@@ -840,21 +1106,30 @@ function getRiskClass(string $level): string
 
     <aside class="sidebar">
 
-<a href="../index.php" class="logo">
-    <div class="logo-icon">
-        <span>R</span>
-    </div>
 
-    <div class="logo-brand">
-        <div class="logo-text">
-            RAKSHAK <span>GIS</span>
-        </div>
+        <a
+            href="../index.php"
+            class="logo"
+        >
 
-        <div class="logo-subtitle">
-            DISASTER RISK INTELLIGENCE
-        </div>
-    </div>
-</a>
+            <div class="logo-icon">
+                R
+            </div>
+
+
+            <div>
+
+                <div class="logo-text">
+                    RakshakGIS
+                </div>
+
+                <div class="logo-subtitle">
+                    Disaster Risk & Relocation
+                </div>
+
+            </div>
+
+        </a>
 
 
         <nav class="sidebar-nav">
@@ -876,7 +1151,7 @@ function getRiskClass(string $level): string
 
             <a
                 href="habitations.php"
-                class="nav-link active"
+                class="nav-link"
             >
                 <span class="nav-icon">⌖</span>
                 Habitations
@@ -908,7 +1183,7 @@ function getRiskClass(string $level): string
 
             <a
                 href="relocation_sites.php"
-                class="nav-link"
+                class="nav-link active"
             >
                 <span class="nav-icon">⌂</span>
                 Relocation Sites
@@ -1021,11 +1296,11 @@ function getRiskClass(string $level): string
             <div>
 
                 <div class="page-title">
-                    Habitations
+                    Relocation Sites
                 </div>
 
                 <div class="page-subtitle">
-                    Manage registered habitations and risk factors
+                    Manage safe locations for population relocation
                 </div>
 
             </div>
@@ -1052,17 +1327,17 @@ function getRiskClass(string $level): string
 
             <!-- PAGE HEADER -->
 
-            <div class="page-actions">
+            <div class="site-header">
 
-                <div class="page-heading">
+                <div class="site-heading">
 
                     <h1>
-                        Habitation Management
+                        Safe Relocation Sites
                     </h1>
 
                     <p>
-                        Register and maintain habitation information
-                        used for disaster risk assessment.
+                        Manage locations, capacity, safety and
+                        facilities available for relocation.
                     </p>
 
                 </div>
@@ -1075,7 +1350,7 @@ function getRiskClass(string $level): string
                         onclick="openAddModal()"
                     >
 
-                        + Add Habitation
+                        + Add Relocation Site
 
                     </button>
 
@@ -1112,43 +1387,56 @@ function getRiskClass(string $level): string
 
             <!-- SUMMARY -->
 
-            <div class="habitation-summary">
+            <div class="site-summary">
 
 
-                <div class="summary-card">
+                <div class="site-stat">
 
-                    <div class="summary-label">
-                        Total Habitations
+                    <div class="site-stat-label">
+                        Total Sites
                     </div>
 
-                    <div class="summary-value">
-                        <?= count($habitations) ?>
-                    </div>
-
-                </div>
-
-
-                <div class="summary-card">
-
-                    <div class="summary-label">
-                        Total Population
-                    </div>
-
-                    <div class="summary-value">
-                        <?= number_format($totalPopulation) ?>
+                    <div class="site-stat-value">
+                        <?= $totalSites ?>
                     </div>
 
                 </div>
 
 
-                <div class="summary-card">
+                <div class="site-stat">
 
-                    <div class="summary-label">
-                        Current Records
+                    <div class="site-stat-label">
+                        Total Capacity
                     </div>
 
-                    <div class="summary-value">
-                        <?= count($habitations) ?>
+                    <div class="site-stat-value">
+                        <?= number_format($totalCapacity) ?>
+                    </div>
+
+                </div>
+
+
+                <div class="site-stat available">
+
+                    <div class="site-stat-label">
+                        Available Capacity
+                    </div>
+
+                    <div class="site-stat-value">
+                        <?= number_format($availableCapacity) ?>
+                    </div>
+
+                </div>
+
+
+                <div class="site-stat safety">
+
+                    <div class="site-stat-label">
+                        High Safety Sites
+                    </div>
+
+                    <div class="site-stat-value">
+                        <?= $highSafetySites ?>
                     </div>
 
                 </div>
@@ -1160,7 +1448,7 @@ function getRiskClass(string $level): string
 
             <!-- TOOLBAR -->
 
-            <div class="toolbar">
+            <div class="site-toolbar">
 
 
                 <form
@@ -1172,7 +1460,7 @@ function getRiskClass(string $level): string
                         type="text"
                         name="search"
                         class="search-input"
-                        placeholder="Search habitation, district or state..."
+                        placeholder="Search site, district or facility..."
                         value="<?= htmlspecialchars($search) ?>"
                     >
 
@@ -1188,7 +1476,7 @@ function getRiskClass(string $level): string
                     <?php if ($search !== ""): ?>
 
                         <a
-                            href="habitations.php"
+                            href="relocation_sites.php"
                             class="btn btn-secondary"
                         >
                             Clear
@@ -1205,7 +1493,7 @@ function getRiskClass(string $level): string
 
             <!-- TABLE -->
 
-            <div class="table-card">
+            <div class="site-table-card">
 
                 <div class="table-wrapper">
 
@@ -1216,11 +1504,7 @@ function getRiskClass(string $level): string
                             <tr>
 
                                 <th>
-                                    Habitation
-                                </th>
-
-                                <th>
-                                    Population
+                                    Site
                                 </th>
 
                                 <th>
@@ -1228,11 +1512,19 @@ function getRiskClass(string $level): string
                                 </th>
 
                                 <th>
-                                    Risk Factors
+                                    Capacity
                                 </th>
 
                                 <th>
-                                    Overall Risk
+                                    Safety
+                                </th>
+
+                                <th>
+                                    Distance
+                                </th>
+
+                                <th>
+                                    Facilities
                                 </th>
 
                                 <?php if (($user["role"] ?? "") === "ADMIN"): ?>
@@ -1251,20 +1543,20 @@ function getRiskClass(string $level): string
                         <tbody>
 
 
-                        <?php if (empty($habitations)): ?>
+                        <?php if (empty($sites)): ?>
 
                             <tr>
 
                                 <td
-                                    colspan="6"
+                                    colspan="7"
                                     style="
                                         text-align:center;
-                                        padding:40px;
+                                        padding:45px;
                                         color:#64748b;
                                     "
                                 >
 
-                                    No habitations found.
+                                    No relocation sites found.
 
                                 </td>
 
@@ -1274,16 +1566,30 @@ function getRiskClass(string $level): string
                         <?php else: ?>
 
 
-                            <?php foreach ($habitations as $habitation): ?>
+                            <?php foreach ($sites as $site): ?>
 
 
                                 <?php
 
-                                $riskScore =
-                                    calculateRisk($habitation);
+                                $total =
+                                    (int) $site["total_capacity"];
 
-                                $riskLevel =
-                                    getRiskLevel($riskScore);
+                                $occupied =
+                                    (int) $site["occupied_capacity"];
+
+                                $available =
+                                    max(
+                                        0,
+                                        $total - $occupied
+                                    );
+
+                                $occupancyPercent =
+                                    $total > 0
+                                        ? min(
+                                            100,
+                                            ($occupied / $total) * 100
+                                        )
+                                        : 0;
 
                                 ?>
 
@@ -1291,45 +1597,26 @@ function getRiskClass(string $level): string
                                 <tr>
 
 
-                                    <!-- NAME -->
+                                    <!-- SITE -->
 
                                     <td>
 
-                                        <div class="habitation-name">
+                                        <div class="site-name">
 
                                             <?= htmlspecialchars(
-                                                $habitation["name"]
+                                                $site["site_name"]
                                             ) ?>
 
                                         </div>
 
 
-                                        <div class="habitation-location">
+                                        <div class="site-location">
 
                                             <?= htmlspecialchars(
-                                                $habitation["district"]
-                                            ) ?>,
-                                            <?= htmlspecialchars(
-                                                $habitation["state"]
+                                                $site["district"]
                                             ) ?>
 
                                         </div>
-
-                                    </td>
-
-
-
-                                    <!-- POPULATION -->
-
-                                    <td>
-
-                                        <strong>
-
-                                            <?= number_format(
-                                                (int) $habitation["population"]
-                                            ) ?>
-
-                                        </strong>
 
                                     </td>
 
@@ -1340,27 +1627,32 @@ function getRiskClass(string $level): string
                                     <td>
 
                                         <?php if (
-                                            $habitation["latitude"] !== null &&
-                                            $habitation["longitude"] !== null
+                                            $site["latitude"] !== null &&
+                                            $site["longitude"] !== null
                                         ): ?>
 
                                             <div class="coordinate">
 
                                                 <?= htmlspecialchars(
-                                                    $habitation["latitude"]
+                                                    $site["latitude"]
                                                 ) ?>
 
                                                 ,
 
                                                 <?= htmlspecialchars(
-                                                    $habitation["longitude"]
+                                                    $site["longitude"]
                                                 ) ?>
 
                                             </div>
 
                                         <?php else: ?>
 
-                                            <span class="no-assessment">
+                                            <span
+                                                style="
+                                                    color:#94a3b8;
+                                                    font-size:11px;
+                                                "
+                                            >
                                                 Not available
                                             </span>
 
@@ -1370,49 +1662,46 @@ function getRiskClass(string $level): string
 
 
 
-                                    <!-- RISK FACTORS -->
+                                    <!-- CAPACITY -->
 
                                     <td>
 
-                                        <div style="font-size:11px;line-height:1.8;">
+                                        <div class="capacity-main">
 
-                                            Flood:
-                                            <strong>
-                                                <?= number_format(
-                                                    (float) $habitation["flood_risk"],
-                                                    0
-                                                ) ?>
-                                            </strong>
+                                            <?= number_format(
+                                                $available
+                                            ) ?>
 
-                                            ·
+                                            available
 
-                                            Landslide:
-                                            <strong>
-                                                <?= number_format(
-                                                    (float) $habitation["landslide_risk"],
-                                                    0
-                                                ) ?>
-                                            </strong>
+                                        </div>
 
-                                            <br>
 
-                                            History:
-                                            <strong>
-                                                <?= number_format(
-                                                    (float) $habitation["hazard_history"],
-                                                    0
-                                                ) ?>
-                                            </strong>
+                                        <div class="capacity-sub">
 
-                                            ·
+                                            <?= number_format(
+                                                $occupied
+                                            ) ?>
 
-                                            Vulnerability:
-                                            <strong>
-                                                <?= number_format(
-                                                    (float) $habitation["population_vulnerability"],
-                                                    0
-                                                ) ?>
-                                            </strong>
+                                            occupied /
+                                            <?= number_format(
+                                                $total
+                                            ) ?>
+
+                                            total
+
+                                        </div>
+
+
+                                        <div class="capacity-bar">
+
+                                            <div
+                                                class="capacity-fill"
+                                                style="
+                                                    width:
+                                                    <?= $occupancyPercent ?>%;
+                                                "
+                                            ></div>
 
                                         </div>
 
@@ -1420,32 +1709,78 @@ function getRiskClass(string $level): string
 
 
 
-                                    <!-- OVERALL RISK -->
+                                    <!-- SAFETY -->
 
                                     <td>
 
-                                        <div
-                                            class="risk-mini"
-                                            style="margin-bottom:5px;"
-                                        >
-
-                                            <?= number_format(
-                                                $riskScore,
-                                                1
-                                            ) ?>
-
-                                        </div>
-
-
                                         <span
-                                            class="badge <?= getRiskClass(
-                                                $riskLevel
+                                            class="safety-badge <?= safetyClass(
+                                                $site["safety_level"]
                                             ) ?>"
                                         >
 
-                                            <?= $riskLevel ?>
+                                            <?= htmlspecialchars(
+                                                $site["safety_level"]
+                                            ) ?>
 
                                         </span>
+
+                                    </td>
+
+
+
+                                    <!-- DISTANCE -->
+
+                                    <td>
+
+                                        <?php if (
+                                            $site["distance_from_habitation"]
+                                            !== null
+                                        ): ?>
+
+                                            <strong>
+
+                                                <?= number_format(
+                                                    (float)
+                                                    $site[
+                                                        "distance_from_habitation"
+                                                    ],
+                                                    2
+                                                ) ?>
+
+                                            </strong>
+
+                                            km
+
+                                        <?php else: ?>
+
+                                            <span
+                                                style="
+                                                    color:#94a3b8;
+                                                    font-size:11px;
+                                                "
+                                            >
+                                                Not specified
+                                            </span>
+
+                                        <?php endif; ?>
+
+                                    </td>
+
+
+
+                                    <!-- FACILITIES -->
+
+                                    <td>
+
+                                        <div class="facility-list">
+
+                                            <?= htmlspecialchars(
+                                                $site["facilities"]
+                                                ?: "No facilities listed."
+                                            ) ?>
+
+                                        </div>
 
                                     </td>
 
@@ -1465,7 +1800,7 @@ function getRiskClass(string $level): string
                                                     class="btn btn-small btn-edit"
                                                     onclick='openEditModal(
                                                         <?= json_encode(
-                                                            $habitation,
+                                                            $site,
                                                             JSON_HEX_TAG |
                                                             JSON_HEX_APOS |
                                                             JSON_HEX_QUOT |
@@ -1473,21 +1808,21 @@ function getRiskClass(string $level): string
                                                         ) ?>
                                                     )'
                                                 >
-
                                                     Edit
-
                                                 </button>
 
 
                                                 <form
                                                     method="POST"
-                                                    onsubmit="return confirmDelete();"
+                                                    onsubmit="
+                                                        return confirmDelete();
+                                                    "
                                                 >
 
                                                     <input
                                                         type="hidden"
-                                                        name="delete_id"
-                                                        value="<?= (int) $habitation["id"] ?>"
+                                                        name="delete_site"
+                                                        value="<?= (int) $site["id"] ?>"
                                                     >
 
 
@@ -1495,9 +1830,7 @@ function getRiskClass(string $level): string
                                                         type="submit"
                                                         class="btn btn-small btn-delete"
                                                     >
-
                                                         Delete
-
                                                     </button>
 
                                                 </form>
@@ -1551,7 +1884,7 @@ function getRiskClass(string $level): string
         <div class="modal-header">
 
             <h2>
-                Add New Habitation
+                Add Relocation Site
             </h2>
 
 
@@ -1578,14 +1911,14 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Habitation Name *
+                            Site Name *
                         </label>
 
                         <input
                             type="text"
-                            name="name"
+                            name="site_name"
                             class="form-control"
-                            placeholder="Enter habitation name"
+                            placeholder="e.g. Safe Site A"
                             required
                         >
 
@@ -1604,39 +1937,6 @@ function getRiskClass(string $level): string
                             class="form-control"
                             placeholder="Enter district"
                             required
-                        >
-
-                    </div>
-
-
-                    <div class="form-group">
-
-                        <label class="form-label">
-                            State
-                        </label>
-
-                        <input
-                            type="text"
-                            name="state"
-                            class="form-control"
-                            value="Maharashtra"
-                        >
-
-                    </div>
-
-
-                    <div class="form-group">
-
-                        <label class="form-label">
-                            Population
-                        </label>
-
-                        <input
-                            type="number"
-                            name="population"
-                            class="form-control"
-                            min="0"
-                            value="0"
                         >
 
                     </div>
@@ -1679,20 +1979,16 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Flood Risk
-                            <span class="range-value">
-                                0–100
-                            </span>
+                            Total Capacity
                         </label>
 
                         <input
                             type="number"
-                            name="flood_risk"
+                            name="total_capacity"
                             class="form-control"
                             min="0"
-                            max="100"
-                            step="0.01"
                             value="0"
+                            required
                         >
 
                     </div>
@@ -1701,20 +1997,16 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Landslide Risk
-                            <span class="range-value">
-                                0–100
-                            </span>
+                            Occupied Capacity
                         </label>
 
                         <input
                             type="number"
-                            name="landslide_risk"
+                            name="occupied_capacity"
                             class="form-control"
                             min="0"
-                            max="100"
-                            step="0.01"
                             value="0"
+                            required
                         >
 
                     </div>
@@ -1723,18 +2015,28 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Hazard History
+                            Safety Level
                         </label>
 
-                        <input
-                            type="number"
-                            name="hazard_history"
+                        <select
+                            name="safety_level"
                             class="form-control"
-                            min="0"
-                            max="100"
-                            step="0.01"
-                            value="0"
+                            required
                         >
+
+                            <option value="HIGH">
+                                HIGH
+                            </option>
+
+                            <option value="MEDIUM">
+                                MEDIUM
+                            </option>
+
+                            <option value="LOW">
+                                LOW
+                            </option>
+
+                        </select>
 
                     </div>
 
@@ -1742,18 +2044,40 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Population Vulnerability
+                            Distance from Habitation (km)
                         </label>
 
                         <input
                             type="number"
-                            name="population_vulnerability"
+                            name="distance_from_habitation"
                             class="form-control"
                             min="0"
-                            max="100"
                             step="0.01"
-                            value="0"
+                            placeholder="e.g. 5.20"
                         >
+
+                    </div>
+
+
+                    <div class="form-group full">
+
+                        <label class="form-label">
+                            Facilities
+                        </label>
+
+                        <textarea
+                            name="facilities"
+                            class="form-control"
+                            rows="3"
+                            placeholder="Hospital, School, Water Supply, Electricity, Road Access"
+                        ></textarea>
+
+
+                        <div class="facility-help">
+
+                            Separate facilities with commas.
+
+                        </div>
 
                     </div>
 
@@ -1776,10 +2100,10 @@ function getRiskClass(string $level): string
 
                 <button
                     type="submit"
-                    name="add_habitation"
+                    name="add_site"
                     class="btn btn-primary"
                 >
-                    Add Habitation
+                    Add Site
                 </button>
 
             </div>
@@ -1808,7 +2132,7 @@ function getRiskClass(string $level): string
         <div class="modal-header">
 
             <h2>
-                Edit Habitation
+                Edit Relocation Site
             </h2>
 
 
@@ -1842,13 +2166,13 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Habitation Name *
+                            Site Name *
                         </label>
 
                         <input
                             type="text"
-                            name="name"
-                            id="edit_name"
+                            name="site_name"
+                            id="edit_site_name"
                             class="form-control"
                             required
                         >
@@ -1868,39 +2192,6 @@ function getRiskClass(string $level): string
                             id="edit_district"
                             class="form-control"
                             required
-                        >
-
-                    </div>
-
-
-                    <div class="form-group">
-
-                        <label class="form-label">
-                            State
-                        </label>
-
-                        <input
-                            type="text"
-                            name="state"
-                            id="edit_state"
-                            class="form-control"
-                        >
-
-                    </div>
-
-
-                    <div class="form-group">
-
-                        <label class="form-label">
-                            Population
-                        </label>
-
-                        <input
-                            type="number"
-                            name="population"
-                            id="edit_population"
-                            class="form-control"
-                            min="0"
                         >
 
                     </div>
@@ -1943,17 +2234,16 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Flood Risk
+                            Total Capacity
                         </label>
 
                         <input
                             type="number"
-                            name="flood_risk"
-                            id="edit_flood_risk"
+                            name="total_capacity"
+                            id="edit_total_capacity"
                             class="form-control"
                             min="0"
-                            max="100"
-                            step="0.01"
+                            required
                         >
 
                     </div>
@@ -1962,17 +2252,16 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Landslide Risk
+                            Occupied Capacity
                         </label>
 
                         <input
                             type="number"
-                            name="landslide_risk"
-                            id="edit_landslide_risk"
+                            name="occupied_capacity"
+                            id="edit_occupied_capacity"
                             class="form-control"
                             min="0"
-                            max="100"
-                            step="0.01"
+                            required
                         >
 
                     </div>
@@ -1981,18 +2270,29 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Hazard History
+                            Safety Level
                         </label>
 
-                        <input
-                            type="number"
-                            name="hazard_history"
-                            id="edit_hazard_history"
+                        <select
+                            name="safety_level"
+                            id="edit_safety_level"
                             class="form-control"
-                            min="0"
-                            max="100"
-                            step="0.01"
+                            required
                         >
+
+                            <option value="HIGH">
+                                HIGH
+                            </option>
+
+                            <option value="MEDIUM">
+                                MEDIUM
+                            </option>
+
+                            <option value="LOW">
+                                LOW
+                            </option>
+
+                        </select>
 
                     </div>
 
@@ -2000,18 +2300,33 @@ function getRiskClass(string $level): string
                     <div class="form-group">
 
                         <label class="form-label">
-                            Population Vulnerability
+                            Distance from Habitation (km)
                         </label>
 
                         <input
                             type="number"
-                            name="population_vulnerability"
-                            id="edit_population_vulnerability"
+                            name="distance_from_habitation"
+                            id="edit_distance"
                             class="form-control"
                             min="0"
-                            max="100"
                             step="0.01"
                         >
+
+                    </div>
+
+
+                    <div class="form-group full">
+
+                        <label class="form-label">
+                            Facilities
+                        </label>
+
+                        <textarea
+                            name="facilities"
+                            id="edit_facilities"
+                            class="form-control"
+                            rows="3"
+                        ></textarea>
 
                     </div>
 
@@ -2034,7 +2349,7 @@ function getRiskClass(string $level): string
 
                 <button
                     type="submit"
-                    name="update_habitation"
+                    name="update_site"
                     class="btn btn-primary"
                 >
                     Save Changes
@@ -2055,7 +2370,7 @@ function getRiskClass(string $level): string
 
 /*
 |--------------------------------------------------------------------------
-| Add Modal
+| ADD MODAL
 |--------------------------------------------------------------------------
 */
 
@@ -2081,7 +2396,7 @@ function closeAddModal() {
 
 /*
 |--------------------------------------------------------------------------
-| Edit Modal
+| EDIT MODAL
 |--------------------------------------------------------------------------
 */
 
@@ -2090,17 +2405,11 @@ function openEditModal(data) {
     document.getElementById("edit_id").value =
         data.id ?? "";
 
-    document.getElementById("edit_name").value =
-        data.name ?? "";
+    document.getElementById("edit_site_name").value =
+        data.site_name ?? "";
 
     document.getElementById("edit_district").value =
         data.district ?? "";
-
-    document.getElementById("edit_state").value =
-        data.state ?? "";
-
-    document.getElementById("edit_population").value =
-        data.population ?? 0;
 
     document.getElementById("edit_latitude").value =
         data.latitude ?? "";
@@ -2108,17 +2417,20 @@ function openEditModal(data) {
     document.getElementById("edit_longitude").value =
         data.longitude ?? "";
 
-    document.getElementById("edit_flood_risk").value =
-        data.flood_risk ?? 0;
+    document.getElementById("edit_total_capacity").value =
+        data.total_capacity ?? 0;
 
-    document.getElementById("edit_landslide_risk").value =
-        data.landslide_risk ?? 0;
+    document.getElementById("edit_occupied_capacity").value =
+        data.occupied_capacity ?? 0;
 
-    document.getElementById("edit_hazard_history").value =
-        data.hazard_history ?? 0;
+    document.getElementById("edit_safety_level").value =
+        data.safety_level ?? "LOW";
 
-    document.getElementById("edit_population_vulnerability").value =
-        data.population_vulnerability ?? 0;
+    document.getElementById("edit_distance").value =
+        data.distance_from_habitation ?? "";
+
+    document.getElementById("edit_facilities").value =
+        data.facilities ?? "";
 
 
     document
@@ -2141,16 +2453,15 @@ function closeEditModal() {
 
 /*
 |--------------------------------------------------------------------------
-| Delete Confirmation
+| DELETE CONFIRMATION
 |--------------------------------------------------------------------------
 */
 
 function confirmDelete() {
 
     return confirm(
-        "Are you sure you want to delete this habitation? " +
-        "All related risk assessments and relocation plans " +
-        "may also be deleted because of the database relationships."
+        "Are you sure you want to delete this relocation site? " +
+        "If it is already used by a relocation plan, deletion may fail."
     );
 
 }
@@ -2158,7 +2469,7 @@ function confirmDelete() {
 
 /*
 |--------------------------------------------------------------------------
-| Close modal when clicking outside
+| CLOSE MODALS OUTSIDE CLICK
 |--------------------------------------------------------------------------
 */
 
@@ -2174,12 +2485,16 @@ document.addEventListener(
 
 
         if (event.target === addModal) {
+
             closeAddModal();
+
         }
 
 
         if (event.target === editModal) {
+
             closeEditModal();
+
         }
 
     }

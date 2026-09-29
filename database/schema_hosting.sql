@@ -1,9 +1,3 @@
-CREATE DATABASE IF NOT EXISTS rakshakgis
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
-
-USE rakshakgis;
-
 -- =========================================
 -- HABITATIONS
 -- =========================================
@@ -246,35 +240,4 @@ VALUES
     'LOW',
     12.30,
     'School, Hospital, Water Supply, Transport'
-);
--- =========================================
--- USERS / AUTHENTICATION
--- =========================================
-
-CREATE TABLE users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-
-    name VARCHAR(100) NOT NULL,
-
-    username VARCHAR(100) NOT NULL UNIQUE,
-
-    email VARCHAR(150) DEFAULT NULL UNIQUE,
-
-    password VARCHAR(255) NOT NULL,
-
-    role ENUM(
-        'ADMIN',
-        'ASSESSOR',
-        'VIEWER'
-    ) NOT NULL DEFAULT 'VIEWER',
-
-    status ENUM(
-        'ACTIVE',
-        'INACTIVE'
-    ) NOT NULL DEFAULT 'ACTIVE',
-
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ON UPDATE CURRENT_TIMESTAMP
 );

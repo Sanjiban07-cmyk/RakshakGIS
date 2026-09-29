@@ -1,608 +1,922 @@
 <?php
 
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+ini_set('display_errors', '1');
 
-require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . "/../config/auth.php";
+requireLogin();
+
+require_once __DIR__ . "/../config/database.php";
+
+$user = currentUser();
+
+$message = "";
+$error = "";
+
 
 /*
 |--------------------------------------------------------------------------
-| GET SELECTED HABITATION
+| SAVE RISK ASSESSMENT
 |--------------------------------------------------------------------------
 */
 
-$selectedHabitationId = isset($_GET['id']) && is_numeric($_GET['id'])
-    ? (int) $_GET['id']
-    : 0;
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["save_assessment"])) {
+
+    /*
+    |--------------------------------------------------------------------------
+    | Only ADMIN and ASSESSOR can create assessments
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        !isset($user["role"]) ||
+        !in_array($user["role"], ["ADMIN", "ASSESSOR"], true)
+    ) {
+
+        $error = "You do not have permission to create risk assessments.";
+
+    } else {
+
+        $habitationId = (int) ($_POST["habitation_id"] ?? 0);
+
+        $floodScore = (float) ($_POST["flood_score"] ?? 0);
+        $landslideScore = (float) ($_POST["landslide_score"] ?? 0);
+        $hazardHistoryScore = (float) ($_POST["hazard_history_score"] ?? 0);
+        $vulnerabilityScore = (float) ($_POST["vulnerability_score"] ?? 0);
+
+        $assessmentNotes = trim(
+            $_POST["assessment_notes"] ?? ""
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate Scores
+        |--------------------------------------------------------------------------
+        */
+
+        if ($habitationId <= 0) {
+
+            $error = "Please select a habitation.";
+
+        } elseif (
+            $floodScore < 0 ||
+            $floodScore > 100 ||
+            $landslideScore < 0 ||
+            $landslideScore > 100 ||
+            $hazardHistoryScore < 0 ||
+            $hazardHistoryScore > 100 ||
+            $vulnerabilityScore < 0 ||
+            $vulnerabilityScore > 100
+        ) {
+
+            $error = "All risk scores must be between 0 and 100.";
+
+        } else {
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Verify Habitation
+            |--------------------------------------------------------------------------
+            */
+
+            $stmt = $conn->prepare("
+                SELECT
+                    id,
+                    name,
+                    district,
+                    population
+                FROM habitations
+                WHERE id = ?
+                LIMIT 1
+            ");
+
+            $stmt->bind_param(
+                "i",
+                $habitationId
+            );
+
+            $stmt->execute();
+
+            $result = $stmt->get_result();
+
+            $habitation = $result->fetch_assoc();
+
+            $stmt->close();
+
+
+            if (!$habitation) {
+
+                $error = "Selected habitation does not exist.";
+
+            } else {
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Calculate Risk Score
+                |--------------------------------------------------------------------------
+                */
+
+                $riskScore = (
+                    $floodScore +
+                    $landslideScore +
+                    $hazardHistoryScore +
+                    $vulnerabilityScore
+                ) / 4;
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Determine Risk Level
+                |--------------------------------------------------------------------------
+                */
+
+                if ($riskScore >= 70) {
+
+                    $riskLevel = "HIGH";
+
+                } elseif ($riskScore >= 40) {
+
+                    $riskLevel = "MEDIUM";
+
+                } else {
+
+                    $riskLevel = "LOW";
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Determine Red Zone
+                |--------------------------------------------------------------------------
+                */
+
+                $redZone = $riskScore >= 70 ? 1 : 0;
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Determine Relocation Priority
+                |--------------------------------------------------------------------------
+                */
+
+                if ($riskScore >= 85) {
+
+                    $relocationPriority = "IMMEDIATE";
+
+                } elseif ($riskScore >= 70) {
+
+                    $relocationPriority = "SHORT-TERM";
+
+                } elseif ($riskScore >= 50) {
+
+                    $relocationPriority = "MEDIUM-TERM";
+
+                } else {
+
+                    $relocationPriority = "NONE";
+                }
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Save Assessment
+                |--------------------------------------------------------------------------
+                */
+
+                $stmt = $conn->prepare("
+                    INSERT INTO risk_assessments
+                    (
+                        habitation_id,
+                        flood_score,
+                        landslide_score,
+                        hazard_history_score,
+                        vulnerability_score,
+                        risk_score,
+                        risk_level,
+                        red_zone,
+                        relocation_priority,
+                        assessment_notes
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+
+
+                $stmt->bind_param(
+                    "idddddsiss",
+                    $habitationId,
+                    $floodScore,
+                    $landslideScore,
+                    $hazardHistoryScore,
+                    $vulnerabilityScore,
+                    $riskScore,
+                    $riskLevel,
+                    $redZone,
+                    $relocationPriority,
+                    $assessmentNotes
+                );
+
+
+                if ($stmt->execute()) {
+
+                    $message =
+                        "Risk assessment saved successfully for " .
+                        $habitation["name"] .
+                        ".";
+
+                } else {
+
+                    $error =
+                        "Unable to save the risk assessment: " .
+                        $stmt->error;
+                }
+
+
+                $stmt->close();
+            }
+        }
+    }
+}
+
 
 /*
 |--------------------------------------------------------------------------
-| LOAD HABITATIONS
-|--------------------------------------------------------------------------
-| Risk factor values are loaded from the habitations table so that
-| selecting a habitation automatically fills the sliders.
+| FETCH HABITATIONS
 |--------------------------------------------------------------------------
 */
 
 $habitations = [];
 
-$sql = "
+$result = $conn->query("
     SELECT
         id,
         name,
         district,
-        population,
-        flood_risk,
-        landslide_risk,
-        hazard_history,
-        population_vulnerability
+        state,
+        population
     FROM habitations
     ORDER BY name ASC
-";
+");
 
-$result = $conn->query($sql);
 
 if ($result) {
+
     while ($row = $result->fetch_assoc()) {
+
         $habitations[] = $row;
     }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| FETCH LATEST ASSESSMENT FOR EACH HABITATION
+|--------------------------------------------------------------------------
+*/
+
+$assessments = [];
+
+$result = $conn->query("
+    SELECT
+        ra.id,
+        ra.habitation_id,
+        ra.flood_score,
+        ra.landslide_score,
+        ra.hazard_history_score,
+        ra.vulnerability_score,
+        ra.risk_score,
+        ra.risk_level,
+        ra.red_zone,
+        ra.relocation_priority,
+        ra.assessment_notes,
+        ra.assessed_at,
+
+        h.name AS habitation_name,
+        h.district
+
+    FROM risk_assessments ra
+
+    INNER JOIN habitations h
+        ON h.id = ra.habitation_id
+
+    INNER JOIN (
+        SELECT
+            habitation_id,
+            MAX(id) AS latest_id
+        FROM risk_assessments
+        GROUP BY habitation_id
+    ) latest
+
+        ON latest.latest_id = ra.id
+
+    ORDER BY ra.assessed_at DESC
+");
+
+
+if ($result) {
+
+    while ($row = $result->fetch_assoc()) {
+
+        $assessments[] = $row;
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| SUMMARY
+|--------------------------------------------------------------------------
+*/
+
+$totalAssessments = count($assessments);
+
+$highRiskCount = 0;
+$mediumRiskCount = 0;
+$lowRiskCount = 0;
+$redZoneCount = 0;
+$immediateCount = 0;
+
+
+foreach ($assessments as $assessment) {
+
+    if ($assessment["risk_level"] === "HIGH") {
+        $highRiskCount++;
+    }
+
+    if ($assessment["risk_level"] === "MEDIUM") {
+        $mediumRiskCount++;
+    }
+
+    if ($assessment["risk_level"] === "LOW") {
+        $lowRiskCount++;
+    }
+
+    if ((int) $assessment["red_zone"] === 1) {
+        $redZoneCount++;
+    }
+
+    if ($assessment["relocation_priority"] === "IMMEDIATE") {
+        $immediateCount++;
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
+
+function riskClass(string $level): string
+{
+    return match ($level) {
+
+        "HIGH" => "badge-high",
+
+        "MEDIUM" => "badge-medium",
+
+        "LOW" => "badge-low",
+
+        default => ""
+    };
+}
+
+
+function priorityClass(string $priority): string
+{
+    return match ($priority) {
+
+        "IMMEDIATE" => "priority-immediate",
+
+        "SHORT-TERM" => "priority-short",
+
+        "MEDIUM-TERM" => "priority-medium",
+
+        default => "priority-none"
+    };
 }
 
 ?>
 
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
 
     <meta charset="UTF-8">
 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
 
     <title>Risk Assessment | RakshakGIS</title>
 
+
+    <link
+        rel="stylesheet"
+        href="../assets/css/style.css"
+    >
+
+
     <style>
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        /* =========================================
+           RISK ASSESSMENT PAGE
+           ========================================= */
 
-        body {
-            font-family: Arial, Helvetica, sans-serif;
-            background: #f8fafc;
-            color: #172554;
-        }
+        .assessment-header {
 
-        .layout {
             display: flex;
-            min-height: 100vh;
-        }
 
-        /* =========================================================
-           SIDEBAR
-        ========================================================= */
-
-        .sidebar {
-            width: 268px;
-            background: #0f172a;
-            color: white;
-            position: fixed;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            padding: 18px 14px;
-            overflow-y: auto;
-        }
-
-        .brand {
-            display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 0 10px 18px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-        }
 
-        .brand-logo {
-            width: 40px;
-            height: 40px;
-            border-radius: 9px;
-            background: #2563eb;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 20px;
-        }
-
-        .brand-name {
-            font-size: 19px;
-            font-weight: 700;
-        }
-
-        .brand-subtitle {
-            font-size: 11px;
-            color: #94a3b8;
-            margin-top: 3px;
-        }
-
-        .menu-title {
-            color: #64748b;
-            font-size: 11px;
-            margin: 36px 12px 14px;
-            letter-spacing: .5px;
-        }
-
-        .nav-link {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            color: #dbeafe;
-            text-decoration: none;
-            padding: 13px 14px;
-            margin-bottom: 4px;
-            border-radius: 8px;
-            font-size: 15px;
-        }
-
-        .nav-link:hover {
-            background: rgba(255,255,255,.06);
-        }
-
-        .nav-link.active {
-            background: #2563eb;
-            color: white;
-        }
-
-        .nav-icon {
-            width: 20px;
-            text-align: center;
-        }
-
-        /* =========================================================
-           MAIN
-        ========================================================= */
-
-        .main {
-            margin-left: 268px;
-            width: calc(100% - 268px);
-        }
-
-        .topbar {
-            height: 78px;
-            background: white;
-            border-bottom: 1px solid #e2e8f0;
-            display: flex;
-            align-items: center;
             justify-content: space-between;
-            padding: 0 32px;
-        }
 
-        .top-title {
-            font-size: 20px;
-            font-weight: 700;
-        }
-
-        .top-subtitle {
-            font-size: 13px;
-            color: #64748b;
-            margin-top: 4px;
-        }
-
-        .admin-area {
-            display: flex;
-            align-items: center;
             gap: 20px;
-            font-weight: 700;
-        }
 
-        .online {
-            color: #16a34a;
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .online::before {
-            content: "";
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            background: #16a34a;
-            border-radius: 50%;
-            margin-right: 7px;
-        }
-
-        .content {
-            padding: 38px 32px 60px;
-            max-width: 1400px;
-        }
-
-        .page-title {
-            font-size: 34px;
-            margin-bottom: 6px;
-        }
-
-        .page-description {
-            color: #475569;
-            font-size: 16px;
-            margin-bottom: 30px;
-        }
-
-        /* =========================================================
-           CARDS
-        ========================================================= */
-
-        .card {
-            background: white;
-            border: 1px solid #e2e8f0;
-            border-radius: 14px;
-            padding: 28px;
             margin-bottom: 24px;
-            box-shadow: 0 1px 2px rgba(15,23,42,.03);
+
         }
 
-        .card-title {
-            font-size: 20px;
-            font-weight: 700;
-            margin-bottom: 5px;
+
+        .assessment-heading h1 {
+
+            font-size: 24px;
+
+            font-weight: 800;
+
         }
 
-        .card-description {
-            color: #64748b;
-            font-size: 14px;
-            margin-bottom: 25px;
-        }
 
-        .form-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 22px;
-        }
+        .assessment-heading p {
 
-        .full {
-            grid-column: 1 / -1;
-        }
+            margin-top: 5px;
 
-        label {
-            display: block;
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            color: #334155;
-        }
+            color: var(--muted);
 
-        select,
-        input,
-        textarea {
-            width: 100%;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            padding: 12px 13px;
-            font-size: 14px;
-            background: white;
-            outline: none;
-        }
-
-        select:focus,
-        input:focus,
-        textarea:focus {
-            border-color: #2563eb;
-            box-shadow: 0 0 0 3px rgba(37,99,235,.1);
-        }
-
-        /* =========================================================
-           SELECTED HABITATION INFO
-        ========================================================= */
-
-        .selected-info {
-            display: none;
-            margin-top: 14px;
-            padding: 13px 16px;
-            background: #eff6ff;
-            border: 1px solid #bfdbfe;
-            border-radius: 8px;
-            color: #1d4ed8;
-            font-size: 14px;
-        }
-
-        .selected-info strong {
-            font-weight: 700;
-        }
-
-        /* =========================================================
-           RANGE INPUTS
-        ========================================================= */
-
-        .range-row {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-
-        input[type="range"] {
-            padding: 0;
-            accent-color: #2563eb;
-        }
-
-        .score-value {
-            min-width: 48px;
-            height: 38px;
-            border-radius: 7px;
-            background: #eff6ff;
-            color: #2563eb;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-        }
-
-        .hint {
-            color: #94a3b8;
             font-size: 12px;
-            margin-top: 6px;
+
         }
 
-        /* =========================================================
-           BUTTONS
-        ========================================================= */
 
-        .button-row {
-            margin-top: 28px;
-            display: flex;
-            gap: 12px;
+        .assessment-summary {
+
+            display: grid;
+
+            grid-template-columns:
+                repeat(5, 1fr);
+
+            gap: 14px;
+
+            margin-bottom: 20px;
+
         }
 
-        button {
-            border: none;
-            border-radius: 8px;
-            padding: 13px 22px;
-            font-size: 14px;
-            font-weight: 700;
-            cursor: pointer;
-        }
 
-        .primary-btn {
-            background: #2563eb;
-            color: white;
-        }
+        .assessment-stat {
 
-        .primary-btn:hover {
-            background: #1d4ed8;
-        }
+            background: white;
 
-        .secondary-btn {
-            background: #e2e8f0;
-            color: #334155;
-        }
+            border: 1px solid var(--border);
 
-        /* =========================================================
-           RESULT
-        ========================================================= */
-
-        #result {
-            display: none;
-        }
-
-        .result-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 20px;
-            margin-bottom: 25px;
-        }
-
-        .risk-score-box {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
             border-radius: 12px;
-            padding: 25px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
+
+            padding: 17px;
+
         }
+
+
+        .assessment-stat-label {
+
+            font-size: 11px;
+
+            color: var(--muted);
+
+        }
+
+
+        .assessment-stat-value {
+
+            font-size: 25px;
+
+            font-weight: 800;
+
+            margin-top: 6px;
+
+        }
+
+
+        .assessment-stat.high
+        .assessment-stat-value {
+
+            color: #dc2626;
+
+        }
+
+
+        .assessment-stat.medium
+        .assessment-stat-value {
+
+            color: #d97706;
+
+        }
+
+
+        .assessment-stat.low
+        .assessment-stat-value {
+
+            color: #16a34a;
+
+        }
+
+
+        .assessment-stat.red
+        .assessment-stat-value {
+
+            color: #991b1b;
+
+        }
+
+
+        .assessment-layout {
+
+            display: grid;
+
+            grid-template-columns:
+                390px 1fr;
+
+            gap: 20px;
+
+            align-items: start;
+
+        }
+
+
+        .assessment-form-card,
+        .assessment-list-card {
+
+            background: white;
+
+            border: 1px solid var(--border);
+
+            border-radius: 12px;
+
+            overflow: hidden;
+
+        }
+
+
+        .assessment-card-header {
+
+            padding: 18px 20px;
+
+            border-bottom: 1px solid var(--border);
+
+        }
+
+
+        .assessment-card-header h2 {
+
+            font-size: 15px;
+
+            font-weight: 800;
+
+        }
+
+
+        .assessment-card-header p {
+
+            font-size: 11px;
+
+            color: var(--muted);
+
+            margin-top: 4px;
+
+        }
+
+
+        .assessment-card-body {
+
+            padding: 20px;
+
+        }
+
+
+        .score-group {
+
+            margin-top: 17px;
+
+        }
+
+
+        .score-header {
+
+            display: flex;
+
+            justify-content: space-between;
+
+            align-items: center;
+
+            margin-bottom: 7px;
+
+        }
+
 
         .score-label {
-            color: #64748b;
-            font-size: 13px;
-            margin-bottom: 5px;
+
+            font-size: 12px;
+
+            font-weight: 700;
+
         }
+
 
         .score-number {
-            font-size: 48px;
+
+            font-size: 12px;
+
             font-weight: 800;
-            color: #dc2626;
+
+            color: var(--primary);
+
         }
 
-        .risk-badge {
-            padding: 9px 18px;
-            border-radius: 30px;
-            font-size: 13px;
-            font-weight: 800;
+
+        .score-range {
+
+            width: 100%;
+
+            accent-color: var(--primary);
+
+            cursor: pointer;
+
         }
 
-        .high {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
 
-        .medium {
-            background: #fef3c7;
-            color: #b45309;
-        }
+        .score-help {
 
-        .low {
-            background: #dcfce7;
-            color: #15803d;
-        }
-
-        .red-zone {
-            margin-top: 15px;
-            padding: 16px 18px;
-            border-radius: 9px;
-            background: #fee2e2;
-            border: 1px solid #fecaca;
-            color: #b91c1c;
-            font-weight: 700;
-        }
-
-        .safe-zone {
-            margin-top: 15px;
-            padding: 16px 18px;
-            border-radius: 9px;
-            background: #dcfce7;
-            border: 1px solid #bbf7d0;
-            color: #15803d;
-            font-weight: 700;
-        }
-
-        .priority-box {
-            margin-top: 20px;
-            padding: 18px;
-            background: #fff7ed;
-            border: 1px solid #fed7aa;
-            border-radius: 10px;
-            color: #c2410c;
-            font-weight: 700;
-        }
-
-        /* =========================================================
-           HAZARD FACTORS
-        ========================================================= */
-
-        .factor-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 18px;
-            margin-top: 20px;
-        }
-
-        .factor {
-            border: 1px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 18px;
-        }
-
-        .factor-top {
             display: flex;
+
             justify-content: space-between;
-            margin-bottom: 10px;
-            font-size: 14px;
-            font-weight: 600;
+
+            font-size: 9px;
+
+            color: #94a3b8;
+
+            margin-top: 3px;
+
         }
 
-        .progress {
-            height: 8px;
-            background: #e2e8f0;
+
+        .risk-preview {
+
+            margin-top: 22px;
+
+            padding: 16px;
+
+            background: #f8fafc;
+
+            border: 1px solid var(--border);
+
             border-radius: 10px;
-            overflow: hidden;
+
         }
 
-        .progress-bar {
-            height: 100%;
-            background: #2563eb;
-            border-radius: 10px;
+
+        .risk-preview-label {
+
+            font-size: 10px;
+
+            color: var(--muted);
+
         }
 
-        /* =========================================================
-           PLAN RELOCATION BUTTON
-        ========================================================= */
 
-        .result-actions {
-            margin-top: 28px;
-            padding-top: 24px;
-            border-top: 1px solid #e2e8f0;
-            display: flex;
-            align-items: center;
-            gap: 12px;
+        .risk-preview-score {
+
+            font-size: 32px;
+
+            font-weight: 800;
+
+            margin-top: 4px;
+
         }
 
-        .plan-relocation-btn {
+
+        .risk-preview-level {
+
             display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 13px 24px;
-            background: #2563eb;
-            color: #ffffff;
-            text-decoration: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 700;
-            transition: background 0.2s ease, transform 0.2s ease;
+
+            margin-top: 6px;
+
+            padding: 5px 10px;
+
+            border-radius: 999px;
+
+            font-size: 10px;
+
+            font-weight: 800;
+
         }
 
-        .plan-relocation-btn:hover {
-            background: #1d4ed8;
-            transform: translateY(-1px);
+
+        .preview-low {
+
+            background: #dcfce7;
+
+            color: #15803d;
+
         }
 
-        .plan-relocation-btn.disabled {
-            pointer-events: none;
-            opacity: 0.5;
+
+        .preview-medium {
+
+            background: #fef3c7;
+
+            color: #b45309;
+
         }
 
-        .error-box {
-            display: none;
-            margin-top: 20px;
-            padding: 15px;
+
+        .preview-high {
+
             background: #fee2e2;
-            border: 1px solid #fecaca;
+
             color: #b91c1c;
-            border-radius: 8px;
+
         }
 
-        /* =========================================================
-           RESPONSIVE
-        ========================================================= */
 
-        @media (max-width: 900px) {
+        .assessment-table-wrapper {
 
-            .sidebar {
-                width: 220px;
+            overflow-x: auto;
+
+        }
+
+
+        .assessment-table {
+
+            min-width: 850px;
+
+        }
+
+
+        .assessment-table td {
+
+            vertical-align: middle;
+
+        }
+
+
+        .assessment-habitation {
+
+            font-weight: 700;
+
+        }
+
+
+        .assessment-location {
+
+            font-size: 10px;
+
+            color: var(--muted);
+
+            margin-top: 3px;
+
+        }
+
+
+        .assessment-score {
+
+            font-size: 15px;
+
+            font-weight: 800;
+
+        }
+
+
+        .priority-badge {
+
+            display: inline-flex;
+
+            padding: 5px 8px;
+
+            border-radius: 999px;
+
+            font-size: 10px;
+
+            font-weight: 800;
+
+        }
+
+
+        .priority-immediate {
+
+            background: #fee2e2;
+
+            color: #b91c1c;
+
+        }
+
+
+        .priority-short {
+
+            background: #ffedd5;
+
+            color: #c2410c;
+
+        }
+
+
+        .priority-medium {
+
+            background: #fef3c7;
+
+            color: #a16207;
+
+        }
+
+
+        .priority-none {
+
+            background: #f1f5f9;
+
+            color: #64748b;
+
+        }
+
+
+        .assessment-notes {
+
+            max-width: 220px;
+
+            font-size: 11px;
+
+            color: var(--muted);
+
+            line-height: 1.5;
+
+        }
+
+
+        .empty-assessments {
+
+            text-align: center;
+
+            padding: 45px 20px;
+
+            color: var(--muted);
+
+        }
+
+
+        .empty-assessments strong {
+
+            display: block;
+
+            color: var(--text);
+
+            margin-bottom: 5px;
+
+        }
+
+
+        @media (max-width: 1150px) {
+
+            .assessment-summary {
+
+                grid-template-columns:
+                    repeat(3, 1fr);
+
             }
 
-            .main {
-                margin-left: 220px;
-                width: calc(100% - 220px);
-            }
+            .assessment-layout {
 
-            .form-grid,
-            .factor-grid {
                 grid-template-columns: 1fr;
+
             }
 
         }
 
-        @media (max-width: 650px) {
 
-            .sidebar {
-                width: 0;
-                padding: 0;
-                overflow: hidden;
+        @media (max-width: 700px) {
+
+            .assessment-summary {
+
+                grid-template-columns: 1fr 1fr;
+
             }
 
-            .main {
-                margin-left: 0;
-                width: 100%;
-            }
+            .assessment-header {
 
-            .topbar {
-                padding: 0 18px;
-            }
-
-            .content {
-                padding: 25px 18px 40px;
-            }
-
-            .admin-area {
-                gap: 8px;
-            }
-
-            .risk-score-box {
-                flex-direction: column;
                 align-items: flex-start;
-                gap: 20px;
+
+                flex-direction: column;
+
             }
 
         }
@@ -611,1440 +925,1128 @@ if ($result) {
 
 </head>
 
+
 <body>
 
-<div class="layout">
 
-    <!-- =========================================================
+<div class="app">
+
+
+    <!-- =====================================================
          SIDEBAR
-    ========================================================= -->
+         ===================================================== -->
 
     <aside class="sidebar">
 
-        <div class="brand">
 
-            <div class="brand-logo">
+        <a
+            href="../index.php"
+            class="logo"
+        >
+
+            <div class="logo-icon">
                 R
             </div>
 
+
             <div>
 
-                <div class="brand-name">
+                <div class="logo-text">
                     RakshakGIS
                 </div>
 
-                <div class="brand-subtitle">
+                <div class="logo-subtitle">
                     Disaster Risk & Relocation
                 </div>
 
             </div>
 
+        </a>
+
+
+        <nav class="sidebar-nav">
+
+
+            <div class="nav-section">
+                Main
+            </div>
+
+
+            <a
+                href="../index.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">⌂</span>
+                Dashboard
+            </a>
+
+
+            <a
+                href="habitations.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">⌖</span>
+                Habitations
+            </a>
+
+
+            <a
+                href="risk_assessment.php"
+                class="nav-link active"
+            >
+                <span class="nav-icon">⚠</span>
+                Risk Assessment
+            </a>
+
+
+            <a
+                href="risk_map.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">◎</span>
+                Risk Map
+            </a>
+
+
+            <div class="nav-section">
+                Relocation
+            </div>
+
+
+            <a
+                href="relocation_sites.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">⌂</span>
+                Relocation Sites
+            </a>
+
+
+            <a
+                href="relocation_plans.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">→</span>
+                Relocation Plans
+            </a>
+
+
+            <div class="nav-section">
+                System
+            </div>
+
+
+            <a
+                href="reports.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">▤</span>
+                Reports
+            </a>
+
+
+            <?php if (($user["role"] ?? "") === "ADMIN"): ?>
+
+                <a
+                    href="admin.php"
+                    class="nav-link"
+                >
+                    <span class="nav-icon">⚙</span>
+                    Administration
+                </a>
+
+            <?php endif; ?>
+
+
+        </nav>
+
+
+        <div class="sidebar-user">
+
+            <div class="sidebar-user-inner">
+
+                <div class="sidebar-avatar">
+
+                    <?= strtoupper(
+                        substr(
+                            $user["name"] ?? "A",
+                            0,
+                            1
+                        )
+                    ) ?>
+
+                </div>
+
+
+                <div class="sidebar-user-info">
+
+                    <div class="sidebar-user-name">
+
+                        <?= htmlspecialchars(
+                            $user["name"] ?? "Administrator"
+                        ) ?>
+
+                    </div>
+
+
+                    <div class="sidebar-user-role">
+
+                        <?= htmlspecialchars(
+                            $user["role"] ?? "USER"
+                        ) ?>
+
+                    </div>
+
+                </div>
+
+
+                <a
+                    href="../logout.php"
+                    class="sidebar-logout"
+                    title="Logout"
+                >
+                    ⎋
+                </a>
+
+            </div>
+
         </div>
-
-        <div class="menu-title">
-            MAIN
-        </div>
-
-        <a href="dashboard.php" class="nav-link">
-
-            <span class="nav-icon">⌂</span>
-
-            Dashboard
-
-        </a>
-
-        <a href="habitations.php" class="nav-link">
-
-            <span class="nav-icon">⌂</span>
-
-            Habitations
-
-        </a>
-
-        <a href="add_habitation.php" class="nav-link">
-
-            <span class="nav-icon">＋</span>
-
-            Add Habitation
-
-        </a>
-
-        <a href="risk_assessment.php" class="nav-link active">
-
-            <span class="nav-icon">⚠</span>
-
-            Risk Assessment
-
-        </a>
-
-        <a href="map.php" class="nav-link">
-
-            <span class="nav-icon">●</span>
-
-            Interactive Map
-
-        </a>
-
-        <a
-            href="<?php echo $selectedHabitationId > 0
-                ? 'relocation.php?id=' . $selectedHabitationId
-                : 'habitations.php'; ?>"
-            class="nav-link"
-        >
-
-            <span class="nav-icon">↕</span>
-
-            Relocation Planner
-
-        </a>
-
-        <a href="relocation_plans.php" class="nav-link">
-
-            <span class="nav-icon">▣</span>
-
-            Relocation Plans
-
-        </a>
-
-        <a href="reports.php" class="nav-link">
-
-            <span class="nav-icon">▤</span>
-
-            Reports
-
-        </a>
-
-        <div class="menu-title">
-            INFORMATION
-        </div>
-
-        <a href="about.php" class="nav-link">
-
-            <span class="nav-icon">ⓘ</span>
-
-            About
-
-        </a>
-
-        <a href="contact.php" class="nav-link">
-
-            <span class="nav-icon">✉</span>
-
-            Contact
-
-        </a>
 
     </aside>
 
-    <!-- =========================================================
+
+
+    <!-- =====================================================
          MAIN
-    ========================================================= -->
+         ===================================================== -->
 
     <main class="main">
+
+
+        <!-- TOPBAR -->
 
         <header class="topbar">
 
             <div>
 
-                <div class="top-title">
+                <div class="page-title">
                     Risk Assessment
                 </div>
 
-                <div class="top-subtitle">
-                    Evaluate disaster risk for registered habitations
+                <div class="page-subtitle">
+                    Evaluate habitation-level disaster risk
                 </div>
 
             </div>
 
-            <div class="admin-area">
 
-                <span class="online">
-                    System Online
-                </span>
+            <div class="topbar-right">
 
-                <span>🔔</span>
+                <div class="status">
 
-                <span>Admin</span>
+                    <span class="status-dot"></span>
+
+                    System Operational
+
+                </div>
 
             </div>
 
         </header>
 
-        <section class="content">
 
-            <h1 class="page-title">
-                Risk Assessment
-            </h1>
 
-            <p class="page-description">
-                Calculate disaster risk using hazard intensity,
-                disaster history and population vulnerability.
-            </p>
+        <!-- CONTENT -->
 
-            <!-- =====================================================
-                 ASSESSMENT FORM
-            ====================================================== -->
+        <div class="content">
 
-            <div class="card">
 
-                <div class="card-title">
-                    New Risk Assessment
+            <!-- HEADER -->
+
+            <div class="assessment-header">
+
+                <div class="assessment-heading">
+
+                    <h1>
+                        Disaster Risk Assessment
+                    </h1>
+
+                    <p>
+                        Assess flood, landslide, hazard history and
+                        population vulnerability.
+                    </p>
+
                 </div>
 
-                <div class="card-description">
-                    Select a habitation and provide the current risk
-                    factors. Each factor is evaluated on a scale of 0–100.
+            </div>
+
+
+
+            <!-- ALERTS -->
+
+            <?php if ($message): ?>
+
+                <div class="alert alert-success">
+
+                    <?= htmlspecialchars($message) ?>
+
                 </div>
 
-                <form id="riskForm">
+            <?php endif; ?>
 
-                    <div class="form-grid">
 
-                        <!-- HABITATION -->
+            <?php if ($error): ?>
 
-                        <div class="full">
+                <div class="alert alert-danger">
 
-                            <label for="habitation_id">
-                                Select Habitation
-                            </label>
+                    <?= htmlspecialchars($error) ?>
 
-                            <select
-                                id="habitation_id"
-                                name="habitation_id"
-                                required
-                            >
+                </div>
 
-                                <option value="">
-                                    -- Select habitation --
-                                </option>
+            <?php endif; ?>
 
-                                <?php foreach ($habitations as $habitation): ?>
 
-                                    <option
-                                        value="<?= (int)$habitation['id'] ?>"
-                                        data-population="<?= (int)$habitation['population'] ?>"
-                                        data-flood="<?= (float)$habitation['flood_risk'] ?>"
-                                        data-landslide="<?= (float)$habitation['landslide_risk'] ?>"
-                                        data-history="<?= (float)$habitation['hazard_history'] ?>"
-                                        data-vulnerability="<?= (float)$habitation['population_vulnerability'] ?>"
-                                        <?= $selectedHabitationId === (int)$habitation['id'] ? 'selected' : '' ?>
-                                    >
 
-                                        <?= htmlspecialchars($habitation['name']) ?>
+            <!-- SUMMARY -->
 
-                                        —
+            <div class="assessment-summary">
 
-                                        <?= htmlspecialchars($habitation['district']) ?>
 
+                <div class="assessment-stat">
+
+                    <div class="assessment-stat-label">
+                        Assessments
+                    </div>
+
+                    <div class="assessment-stat-value">
+                        <?= $totalAssessments ?>
+                    </div>
+
+                </div>
+
+
+                <div class="assessment-stat high">
+
+                    <div class="assessment-stat-label">
+                        High Risk
+                    </div>
+
+                    <div class="assessment-stat-value">
+                        <?= $highRiskCount ?>
+                    </div>
+
+                </div>
+
+
+                <div class="assessment-stat medium">
+
+                    <div class="assessment-stat-label">
+                        Medium Risk
+                    </div>
+
+                    <div class="assessment-stat-value">
+                        <?= $mediumRiskCount ?>
+                    </div>
+
+                </div>
+
+
+                <div class="assessment-stat low">
+
+                    <div class="assessment-stat-label">
+                        Low Risk
+                    </div>
+
+                    <div class="assessment-stat-value">
+                        <?= $lowRiskCount ?>
+                    </div>
+
+                </div>
+
+
+                <div class="assessment-stat red">
+
+                    <div class="assessment-stat-label">
+                        Red Zones
+                    </div>
+
+                    <div class="assessment-stat-value">
+                        <?= $redZoneCount ?>
+                    </div>
+
+                </div>
+
+
+            </div>
+
+
+
+            <!-- =================================================
+                 FORM + ASSESSMENT LIST
+                 ================================================= -->
+
+            <div class="assessment-layout">
+
+
+                <!-- =============================================
+                     NEW ASSESSMENT FORM
+                     ============================================= -->
+
+                <div class="assessment-form-card">
+
+
+                    <div class="assessment-card-header">
+
+                        <h2>
+                            New Assessment
+                        </h2>
+
+                        <p>
+                            Create a risk assessment for a habitation.
+                        </p>
+
+                    </div>
+
+
+                    <form
+                        method="POST"
+                        id="assessmentForm"
+                    >
+
+
+                        <div class="assessment-card-body">
+
+
+                            <!-- HABITATION -->
+
+                            <div class="form-group">
+
+                                <label
+                                    class="form-label"
+                                    for="habitation_id"
+                                >
+                                    Habitation
+                                </label>
+
+
+                                <select
+                                    name="habitation_id"
+                                    id="habitation_id"
+                                    class="form-control"
+                                    required
+                                >
+
+                                    <option value="">
+                                        Select habitation
                                     </option>
 
-                                <?php endforeach; ?>
 
-                            </select>
+                                    <?php foreach ($habitations as $habitation): ?>
 
-                            <div
-                                id="selectedInfo"
-                                class="selected-info"
-                            ></div>
+                                        <option
+                                            value="<?= (int) $habitation["id"] ?>"
+                                        >
 
-                        </div>
+                                            <?= htmlspecialchars(
+                                                $habitation["name"]
+                                            ) ?>
 
-                        <!-- FLOOD -->
+                                            —
+                                            <?= htmlspecialchars(
+                                                $habitation["district"]
+                                            ) ?>
 
-                        <div>
+                                        </option>
 
-                            <label for="flood_score">
-                                Flood Risk
-                            </label>
+                                    <?php endforeach; ?>
 
-                            <div class="range-row">
+                                </select>
+
+                            </div>
+
+
+
+                            <!-- FLOOD -->
+
+                            <div class="score-group">
+
+                                <div class="score-header">
+
+                                    <label
+                                        class="score-label"
+                                        for="flood_score"
+                                    >
+                                        Flood Risk
+                                    </label>
+
+
+                                    <span
+                                        class="score-number"
+                                        id="floodValue"
+                                    >
+                                        0
+                                    </span>
+
+                                </div>
+
 
                                 <input
                                     type="range"
+                                    class="score-range"
                                     id="flood_score"
                                     name="flood_score"
                                     min="0"
                                     max="100"
-                                    value="50"
+                                    value="0"
                                 >
 
-                                <div
-                                    class="score-value"
-                                    id="flood_value"
-                                >
-                                    50
+
+                                <div class="score-help">
+
+                                    <span>
+                                        Low
+                                    </span>
+
+                                    <span>
+                                        High
+                                    </span>
+
                                 </div>
 
                             </div>
 
-                            <div class="hint">
-                                0 = very low risk, 100 = extreme risk
-                            </div>
 
-                        </div>
 
-                        <!-- LANDSLIDE -->
+                            <!-- LANDSLIDE -->
 
-                        <div>
+                            <div class="score-group">
 
-                            <label for="landslide_score">
-                                Landslide Risk
-                            </label>
+                                <div class="score-header">
 
-                            <div class="range-row">
+                                    <label
+                                        class="score-label"
+                                        for="landslide_score"
+                                    >
+                                        Landslide Risk
+                                    </label>
+
+
+                                    <span
+                                        class="score-number"
+                                        id="landslideValue"
+                                    >
+                                        0
+                                    </span>
+
+                                </div>
+
 
                                 <input
                                     type="range"
+                                    class="score-range"
                                     id="landslide_score"
                                     name="landslide_score"
                                     min="0"
                                     max="100"
-                                    value="50"
+                                    value="0"
                                 >
 
-                                <div
-                                    class="score-value"
-                                    id="landslide_value"
-                                >
-                                    50
+
+                                <div class="score-help">
+
+                                    <span>
+                                        Low
+                                    </span>
+
+                                    <span>
+                                        High
+                                    </span>
+
                                 </div>
 
                             </div>
 
-                            <div class="hint">
-                                0 = very low risk, 100 = extreme risk
-                            </div>
 
-                        </div>
 
-                        <!-- HISTORY -->
+                            <!-- HAZARD HISTORY -->
 
-                        <div>
+                            <div class="score-group">
 
-                            <label for="hazard_history_score">
-                                Hazard History
-                            </label>
+                                <div class="score-header">
 
-                            <div class="range-row">
+                                    <label
+                                        class="score-label"
+                                        for="hazard_history_score"
+                                    >
+                                        Hazard History
+                                    </label>
+
+
+                                    <span
+                                        class="score-number"
+                                        id="hazardValue"
+                                    >
+                                        0
+                                    </span>
+
+                                </div>
+
 
                                 <input
                                     type="range"
+                                    class="score-range"
                                     id="hazard_history_score"
                                     name="hazard_history_score"
                                     min="0"
                                     max="100"
-                                    value="50"
+                                    value="0"
                                 >
 
-                                <div
-                                    class="score-value"
-                                    id="history_value"
-                                >
-                                    50
+
+                                <div class="score-help">
+
+                                    <span>
+                                        Low
+                                    </span>
+
+                                    <span>
+                                        Low history
+                                    </span>
+
+                                    <span>
+                                        High history
+                                    </span>
+
                                 </div>
 
                             </div>
 
-                            <div class="hint">
-                                Historical frequency and severity of disasters
-                            </div>
 
-                        </div>
 
-                        <!-- VULNERABILITY -->
+                            <!-- VULNERABILITY -->
 
-                        <div>
+                            <div class="score-group">
 
-                            <label for="vulnerability_score">
-                                Population Vulnerability
-                            </label>
+                                <div class="score-header">
 
-                            <div class="range-row">
+                                    <label
+                                        class="score-label"
+                                        for="vulnerability_score"
+                                    >
+                                        Population Vulnerability
+                                    </label>
+
+
+                                    <span
+                                        class="score-number"
+                                        id="vulnerabilityValue"
+                                    >
+                                        0
+                                    </span>
+
+                                </div>
+
 
                                 <input
                                     type="range"
+                                    class="score-range"
                                     id="vulnerability_score"
                                     name="vulnerability_score"
                                     min="0"
                                     max="100"
-                                    value="50"
+                                    value="0"
                                 >
 
-                                <div
-                                    class="score-value"
-                                    id="vulnerability_value"
-                                >
-                                    50
+
+                                <div class="score-help">
+
+                                    <span>
+                                        Low
+                                    </span>
+
+                                    <span>
+                                        High
+                                    </span>
+
                                 </div>
 
                             </div>
 
-                            <div class="hint">
-                                Exposure of vulnerable population groups
+
+
+                            <!-- RISK PREVIEW -->
+
+                            <div class="risk-preview">
+
+                                <div class="risk-preview-label">
+
+                                    Calculated Risk Score
+
+                                </div>
+
+
+                                <div
+                                    class="risk-preview-score"
+                                    id="riskPreviewScore"
+                                >
+                                    0.0
+                                </div>
+
+
+                                <span
+                                    id="riskPreviewLevel"
+                                    class="risk-preview-level preview-low"
+                                >
+                                    LOW
+                                </span>
+
                             </div>
 
+
+
+                            <!-- NOTES -->
+
+                            <div
+                                class="form-group"
+                                style="margin-top:18px;"
+                            >
+
+                                <label
+                                    class="form-label"
+                                    for="assessment_notes"
+                                >
+                                    Assessment Notes
+                                </label>
+
+
+                                <textarea
+                                    name="assessment_notes"
+                                    id="assessment_notes"
+                                    class="form-control"
+                                    rows="4"
+                                    placeholder="Add observations, evidence or assessment notes..."
+                                ></textarea>
+
+                            </div>
+
+
                         </div>
 
-                        <!-- NOTES -->
 
-                        <div class="full">
 
-                            <label for="assessment_notes">
-                                Assessment Notes
-                            </label>
-
-                            <textarea
-                                id="assessment_notes"
-                                name="assessment_notes"
-                                rows="4"
-                                placeholder="Add any additional observations..."
-                            ></textarea>
-
-                        </div>
-
-                    </div>
-
-                    <div class="button-row">
-
-                        <button
-                            type="submit"
-                            class="primary-btn"
-                            id="assessButton"
-                        >
-                            Calculate Risk
-                        </button>
-
-                        <button
-                            type="reset"
-                            class="secondary-btn"
-                            id="resetButton"
-                        >
-                            Reset
-                        </button>
-
-                    </div>
-
-                </form>
-
-                <div
-                    id="errorBox"
-                    class="error-box"
-                ></div>
-
-            </div>
-
-            <!-- =====================================================
-                 RESULT
-            ====================================================== -->
-
-            <div
-                class="card"
-                id="result"
-            >
-
-                <div class="result-header">
-
-                    <div>
-
-                        <div class="card-title">
-                            Risk Assessment Result
-                        </div>
-
-                        <div class="card-description">
-                            Calculated disaster risk for the selected habitation.
-                        </div>
-
-                    </div>
-
-                </div>
-
-                <!-- SCORE -->
-
-                <div class="risk-score-box">
-
-                    <div>
-
-                        <div class="score-label">
-                            OVERALL RISK SCORE
-                        </div>
+                        <!-- FORM FOOTER -->
 
                         <div
-                            class="score-number"
-                            id="riskScore"
+                            style="
+                                padding:16px 20px;
+                                border-top:1px solid var(--border);
+                            "
                         >
-                            0
+
+                            <?php if (
+                                in_array(
+                                    $user["role"] ?? "",
+                                    ["ADMIN", "ASSESSOR"],
+                                    true
+                                )
+                            ): ?>
+
+                                <button
+                                    type="submit"
+                                    name="save_assessment"
+                                    class="btn btn-primary"
+                                    style="width:100%;"
+                                >
+
+                                    Save Risk Assessment
+
+                                </button>
+
+                            <?php else: ?>
+
+                                <div class="alert alert-warning">
+
+                                    Your account does not have permission
+                                    to create assessments.
+
+                                </div>
+
+                            <?php endif; ?>
+
                         </div>
 
-                    </div>
 
-                    <div
-                        class="risk-badge high"
-                        id="riskBadge"
-                    >
-                        UNKNOWN
-                    </div>
+                    </form>
 
                 </div>
 
-                <!-- RED ZONE -->
 
-                <div id="zoneBox"></div>
 
-                <!-- PRIORITY -->
+                <!-- =============================================
+                     ASSESSMENT LIST
+                     ============================================= -->
 
-                <div class="priority-box">
+                <div class="assessment-list-card">
 
-                    Relocation Priority:
 
-                    <span id="priority">
-                        -
-                    </span>
+                    <div class="assessment-card-header">
 
-                </div>
+                        <h2>
+                            Latest Assessments
+                        </h2>
 
-                <!-- HAZARD FACTORS -->
-
-                <div
-                    class="card-title"
-                    style="margin-top:30px;"
-                >
-                    Hazard Factors
-                </div>
-
-                <div class="factor-grid">
-
-                    <!-- FLOOD -->
-
-                    <div class="factor">
-
-                        <div class="factor-top">
-
-                            <span>
-                                Flood Risk
-                            </span>
-
-                            <span id="resultFlood">
-                                0
-                            </span>
-
-                        </div>
-
-                        <div class="progress">
-
-                            <div
-                                class="progress-bar"
-                                id="barFlood"
-                                style="width:0%"
-                            ></div>
-
-                        </div>
+                        <p>
+                            Most recent assessment for each habitation.
+                        </p>
 
                     </div>
 
-                    <!-- LANDSLIDE -->
 
-                    <div class="factor">
+                    <?php if (empty($assessments)): ?>
 
-                        <div class="factor-top">
+                        <div class="empty-assessments">
 
-                            <span>
-                                Landslide Risk
-                            </span>
+                            <strong>
+                                No risk assessments yet
+                            </strong>
 
-                            <span id="resultLandslide">
-                                0
-                            </span>
+                            Create the first assessment using
+                            the form on the left.
 
                         </div>
 
-                        <div class="progress">
+                    <?php else: ?>
 
-                            <div
-                                class="progress-bar"
-                                id="barLandslide"
-                                style="width:0%"
-                            ></div>
+
+                        <div class="assessment-table-wrapper">
+
+                            <table class="assessment-table">
+
+                                <thead>
+
+                                    <tr>
+
+                                        <th>
+                                            Habitation
+                                        </th>
+
+                                        <th>
+                                            Risk Score
+                                        </th>
+
+                                        <th>
+                                            Level
+                                        </th>
+
+                                        <th>
+                                            Red Zone
+                                        </th>
+
+                                        <th>
+                                            Priority
+                                        </th>
+
+                                        <th>
+                                            Assessed
+                                        </th>
+
+                                    </tr>
+
+                                </thead>
+
+
+                                <tbody>
+
+
+                                <?php foreach ($assessments as $assessment): ?>
+
+                                    <tr>
+
+
+                                        <td>
+
+                                            <div class="assessment-habitation">
+
+                                                <?= htmlspecialchars(
+                                                    $assessment["habitation_name"]
+                                                ) ?>
+
+                                            </div>
+
+
+                                            <div class="assessment-location">
+
+                                                <?= htmlspecialchars(
+                                                    $assessment["district"]
+                                                ) ?>
+
+                                            </div>
+
+                                        </td>
+
+
+
+                                        <td>
+
+                                            <div class="assessment-score">
+
+                                                <?= number_format(
+                                                    (float) $assessment["risk_score"],
+                                                    1
+                                                ) ?>
+
+                                            </div>
+
+                                        </td>
+
+
+
+                                        <td>
+
+                                            <span
+                                                class="badge <?= riskClass(
+                                                    $assessment["risk_level"]
+                                                ) ?>"
+                                            >
+
+                                                <?= htmlspecialchars(
+                                                    $assessment["risk_level"]
+                                                ) ?>
+
+                                            </span>
+
+                                        </td>
+
+
+
+                                        <td>
+
+                                            <?php if (
+                                                (int) $assessment["red_zone"] === 1
+                                            ): ?>
+
+                                                <span class="badge badge-high">
+                                                    YES
+                                                </span>
+
+                                            <?php else: ?>
+
+                                                <span class="badge badge-low">
+                                                    NO
+                                                </span>
+
+                                            <?php endif; ?>
+
+                                        </td>
+
+
+
+                                        <td>
+
+                                            <span
+                                                class="priority-badge <?= priorityClass(
+                                                    $assessment["relocation_priority"]
+                                                ) ?>"
+                                            >
+
+                                                <?= htmlspecialchars(
+                                                    $assessment["relocation_priority"]
+                                                ) ?>
+
+                                            </span>
+
+                                        </td>
+
+
+
+                                        <td>
+
+                                            <span
+                                                style="
+                                                    font-size:11px;
+                                                    color:var(--muted);
+                                                "
+                                            >
+
+                                                <?= htmlspecialchars(
+                                                    date(
+                                                        "d M Y",
+                                                        strtotime(
+                                                            $assessment["assessed_at"]
+                                                        )
+                                                    )
+                                                ) ?>
+
+                                            </span>
+
+                                        </td>
+
+
+                                    </tr>
+
+                                <?php endforeach; ?>
+
+
+                                </tbody>
+
+                            </table>
 
                         </div>
 
-                    </div>
+                    <?php endif; ?>
 
-                    <!-- HISTORY -->
-
-                    <div class="factor">
-
-                        <div class="factor-top">
-
-                            <span>
-                                Hazard History
-                            </span>
-
-                            <span id="resultHistory">
-                                0
-                            </span>
-
-                        </div>
-
-                        <div class="progress">
-
-                            <div
-                                class="progress-bar"
-                                id="barHistory"
-                                style="width:0%"
-                            ></div>
-
-                        </div>
-
-                    </div>
-
-                    <!-- VULNERABILITY -->
-
-                    <div class="factor">
-
-                        <div class="factor-top">
-
-                            <span>
-                                Population Vulnerability
-                            </span>
-
-                            <span id="resultVulnerability">
-                                0
-                            </span>
-
-                        </div>
-
-                        <div class="progress">
-
-                            <div
-                                class="progress-bar"
-                                id="barVulnerability"
-                                style="width:0%"
-                            ></div>
-
-                        </div>
-
-                    </div>
 
                 </div>
 
-                <!-- =================================================
-                     NEW PLAN RELOCATION BUTTON
-                ================================================== -->
-
-                <div class="result-actions">
-
-                    <a
-                        href="#"
-                        id="planRelocationButton"
-                        class="plan-relocation-btn disabled"
-                    >
-                        Plan Relocation
-                    </a>
-
-                </div>
 
             </div>
 
-        </section>
+
+        </div>
 
     </main>
 
 </div>
 
+
+
 <script>
 
 /*
 |--------------------------------------------------------------------------
-| DOM ELEMENTS
+| Risk Score Preview
 |--------------------------------------------------------------------------
 */
 
-const habitationSelect =
-    document.getElementById('habitation_id');
+const flood =
+    document.getElementById("flood_score");
 
-const selectedInfo =
-    document.getElementById('selectedInfo');
+const landslide =
+    document.getElementById("landslide_score");
 
-const floodSlider =
-    document.getElementById('flood_score');
+const hazard =
+    document.getElementById("hazard_history_score");
 
-const landslideSlider =
-    document.getElementById('landslide_score');
+const vulnerability =
+    document.getElementById("vulnerability_score");
 
-const historySlider =
-    document.getElementById('hazard_history_score');
-
-const vulnerabilitySlider =
-    document.getElementById('vulnerability_score');
 
 const floodValue =
-    document.getElementById('flood_value');
+    document.getElementById("floodValue");
 
 const landslideValue =
-    document.getElementById('landslide_value');
+    document.getElementById("landslideValue");
 
-const historyValue =
-    document.getElementById('history_value');
+const hazardValue =
+    document.getElementById("hazardValue");
 
 const vulnerabilityValue =
-    document.getElementById('vulnerability_value');
-
-const planRelocationButton =
-    document.getElementById('planRelocationButton');
+    document.getElementById("vulnerabilityValue");
 
 
-/*
-|--------------------------------------------------------------------------
-| UPDATE SLIDER DISPLAY
-|--------------------------------------------------------------------------
-*/
+const riskScore =
+    document.getElementById("riskPreviewScore");
 
-function updateSliderDisplays() {
+const riskLevel =
+    document.getElementById("riskPreviewLevel");
+
+
+function updateRiskPreview() {
+
+    const floodScore =
+        Number(flood.value);
+
+    const landslideScore =
+        Number(landslide.value);
+
+    const hazardScore =
+        Number(hazard.value);
+
+    const vulnerabilityScore =
+        Number(vulnerability.value);
+
 
     floodValue.textContent =
-        floodSlider.value;
+        floodScore;
 
     landslideValue.textContent =
-        landslideSlider.value;
+        landslideScore;
 
-    historyValue.textContent =
-        historySlider.value;
+    hazardValue.textContent =
+        hazardScore;
 
     vulnerabilityValue.textContent =
-        vulnerabilitySlider.value;
-
-}
+        vulnerabilityScore;
 
 
-/*
-|--------------------------------------------------------------------------
-| LOAD HABITATION DATA INTO FORM
-|--------------------------------------------------------------------------
-*/
-
-function loadSelectedHabitation() {
-
-    const option =
-        habitationSelect.options[
-            habitationSelect.selectedIndex
-        ];
-
-    if (!option || !option.value) {
-
-        selectedInfo.style.display = 'none';
-        selectedInfo.innerHTML = '';
-
-        floodSlider.value = 50;
-        landslideSlider.value = 50;
-        historySlider.value = 50;
-        vulnerabilitySlider.value = 50;
-
-        updateSliderDisplays();
-
-        planRelocationButton.href = '#';
-        planRelocationButton.classList.add('disabled');
-
-        return;
-    }
-
-    const habitationId =
-        option.value;
-
-    const habitationName =
-        option.textContent.trim();
-
-    const population =
-        Number(option.dataset.population || 0);
-
-    const flood =
-        Number(option.dataset.flood || 0);
-
-    const landslide =
-        Number(option.dataset.landslide || 0);
-
-    const history =
-        Number(option.dataset.history || 0);
-
-    const vulnerability =
-        Number(option.dataset.vulnerability || 0);
+    const total =
+        (
+            floodScore +
+            landslideScore +
+            hazardScore +
+            vulnerabilityScore
+        ) / 4;
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | Fill sliders
-    |--------------------------------------------------------------------------
-    */
-
-    floodSlider.value =
-        flood;
-
-    landslideSlider.value =
-        landslide;
-
-    historySlider.value =
-        history;
-
-    vulnerabilitySlider.value =
-        vulnerability;
-
-    updateSliderDisplays();
+    riskScore.textContent =
+        total.toFixed(1);
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | Selected information
-    |--------------------------------------------------------------------------
-    */
+    let level = "LOW";
 
-    selectedInfo.innerHTML =
-        'Selected: <strong>' +
-        escapeHtml(habitationName) +
-        '</strong>' +
-        ' — Population: <strong>' +
-        population.toLocaleString() +
-        '</strong>';
-
-    selectedInfo.style.display =
-        'block';
+    let className = "preview-low";
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | PLAN RELOCATION LINK
-    |--------------------------------------------------------------------------
-    */
+    if (total >= 70) {
 
-    planRelocationButton.href =
-        'relocation.php?id=' +
-        encodeURIComponent(habitationId);
+        level = "HIGH";
 
-    planRelocationButton.classList.remove('disabled');
+        className = "preview-high";
 
-}
+    } else if (total >= 40) {
 
+        level = "MEDIUM";
 
-/*
-|--------------------------------------------------------------------------
-| HABITATION SELECTION
-|--------------------------------------------------------------------------
-*/
-
-habitationSelect.addEventListener(
-    'change',
-    function() {
-
-        loadSelectedHabitation();
-
-        /*
-        | If a previous result exists, hide it because the
-        | selected habitation has changed.
-        */
-
-        document.getElementById('result').style.display =
-            'none';
+        className = "preview-medium";
 
     }
-);
 
 
-/*
-|--------------------------------------------------------------------------
-| RANGE VALUE DISPLAYS
-|--------------------------------------------------------------------------
-*/
-
-floodSlider.addEventListener(
-    'input',
-    function() {
-        floodValue.textContent =
-            this.value;
-    }
-);
-
-landslideSlider.addEventListener(
-    'input',
-    function() {
-        landslideValue.textContent =
-            this.value;
-    }
-);
-
-historySlider.addEventListener(
-    'input',
-    function() {
-        historyValue.textContent =
-            this.value;
-    }
-);
-
-vulnerabilitySlider.addEventListener(
-    'input',
-    function() {
-        vulnerabilityValue.textContent =
-            this.value;
-    }
-);
-
-
-/*
-|--------------------------------------------------------------------------
-| RISK ASSESSMENT
-|--------------------------------------------------------------------------
-*/
-
-document
-    .getElementById('riskForm')
-    .addEventListener(
-        'submit',
-        async function(e) {
-
-            e.preventDefault();
-
-            const button =
-                document.getElementById('assessButton');
-
-            const errorBox =
-                document.getElementById('errorBox');
-
-            const resultBox =
-                document.getElementById('result');
-
-            errorBox.style.display =
-                'none';
-
-            const habitationId =
-                habitationSelect.value;
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validate habitation
-            |--------------------------------------------------------------------------
-            */
-
-            if (!habitationId) {
-
-                errorBox.textContent =
-                    'Please select a habitation first.';
-
-                errorBox.style.display =
-                    'block';
-
-                return;
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Disable button
-            |--------------------------------------------------------------------------
-            */
-
-            button.disabled = true;
-
-            button.textContent =
-                'Calculating...';
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Prepare API data
-            |--------------------------------------------------------------------------
-            */
-
-            const formData =
-                new URLSearchParams();
-
-            formData.append(
-                'habitation_id',
-                habitationId
-            );
-
-            formData.append(
-                'flood_score',
-                floodSlider.value
-            );
-
-            formData.append(
-                'landslide_score',
-                landslideSlider.value
-            );
-
-            formData.append(
-                'hazard_history_score',
-                historySlider.value
-            );
-
-            formData.append(
-                'vulnerability_score',
-                vulnerabilitySlider.value
-            );
-
-            formData.append(
-                'assessment_notes',
-                document.getElementById(
-                    'assessment_notes'
-                ).value
-            );
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | CALL RISK API
-            |--------------------------------------------------------------------------
-            */
-
-            try {
-
-                const response =
-                    await fetch(
-                        '../api/calculate_risk.php',
-                        {
-                            method: 'POST',
-
-                            headers: {
-                                'Content-Type':
-                                    'application/x-www-form-urlencoded'
-                            },
-
-                            body:
-                                formData.toString()
-                        }
-                    );
-
-
-                const text =
-                    await response.text();
-
-
-                let data;
-
-
-                try {
-
-                    data =
-                        JSON.parse(text);
-
-                } catch (jsonError) {
-
-                    throw new Error(
-                        'Risk API returned an invalid response: ' +
-                        text.substring(0, 300)
-                    );
-
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | API ERROR
-                |--------------------------------------------------------------------------
-                */
-
-                if (!data.success) {
-
-                    throw new Error(
-                        data.message ||
-                        'Risk calculation failed.'
-                    );
-
-                }
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | DISPLAY RESULT
-                |--------------------------------------------------------------------------
-                */
-
-                displayResult(data);
-
-
-            } catch (error) {
-
-                errorBox.textContent =
-                    error.message;
-
-                errorBox.style.display =
-                    'block';
-
-                resultBox.style.display =
-                    'none';
-
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | ENABLE BUTTON
-            |--------------------------------------------------------------------------
-            */
-
-            button.disabled =
-                false;
-
-            button.textContent =
-                'Calculate Risk';
-
-        }
-    );
-
-
-/*
-|--------------------------------------------------------------------------
-| DISPLAY RESULT
-|--------------------------------------------------------------------------
-*/
-
-function displayResult(data) {
-
-    const resultBox =
-        document.getElementById('result');
-
-    resultBox.style.display =
-        'block';
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | API DATA
-    |--------------------------------------------------------------------------
-    */
-
-    const risk =
-        data.risk || {};
-
-    const components =
-        data.components || {};
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | RISK VALUES
-    |--------------------------------------------------------------------------
-    */
-
-    const score =
-        parseFloat(
-            risk.score ?? 0
-        );
-
-    const level =
-        String(
-            risk.level ?? 'UNKNOWN'
-        ).toUpperCase();
-
-    const priority =
-        String(
-            risk.relocation_priority ?? '-'
-        ).toUpperCase();
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | SCORE
-    |--------------------------------------------------------------------------
-    */
-
-    document
-        .getElementById('riskScore')
-        .textContent =
-        score.toFixed(2);
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | RISK BADGE
-    |--------------------------------------------------------------------------
-    */
-
-    const badge =
-        document.getElementById(
-            'riskBadge'
-        );
-
-    badge.textContent =
+    riskLevel.textContent =
         level;
 
-    badge.className =
-        'risk-badge ' +
-        (
-            level === 'HIGH'
-                ? 'high'
-                : level === 'MEDIUM'
-                    ? 'medium'
-                    : 'low'
-        );
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | RED ZONE
-    |--------------------------------------------------------------------------
-    */
-
-    const zoneBox =
-        document.getElementById(
-            'zoneBox'
-        );
-
-    const redZone =
-        Number(
-            risk.red_zone ?? 0
-        );
-
-
-    if (
-        redZone === 1 ||
-        redZone === true
-    ) {
-
-        zoneBox.innerHTML = `
-            <div class="red-zone">
-                🔴 RED ZONE IDENTIFIED
-            </div>
-        `;
-
-    } else {
-
-        zoneBox.innerHTML = `
-            <div class="safe-zone">
-                🟢 RED ZONE NOT IDENTIFIED
-            </div>
-        `;
-
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | PRIORITY
-    |--------------------------------------------------------------------------
-    */
-
-    document
-        .getElementById('priority')
-        .textContent =
-        priority;
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | FACTORS
-    |--------------------------------------------------------------------------
-    */
-
-    updateFactor(
-        'resultFlood',
-        'barFlood',
-        components.flood_risk
-    );
-
-    updateFactor(
-        'resultLandslide',
-        'barLandslide',
-        components.landslide_risk
-    );
-
-    updateFactor(
-        'resultHistory',
-        'barHistory',
-        components.hazard_history
-    );
-
-    updateFactor(
-        'resultVulnerability',
-        'barVulnerability',
-        components.population_vulnerability
-    );
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | ENABLE PLAN RELOCATION
-    |--------------------------------------------------------------------------
-    */
-
-    const habitationId =
-        habitationSelect.value;
-
-    if (habitationId) {
-
-        planRelocationButton.href =
-            'relocation.php?id=' +
-            encodeURIComponent(
-                habitationId
-            );
-
-        planRelocationButton.classList.remove(
-            'disabled'
-        );
-
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | SCROLL TO RESULT
-    |--------------------------------------------------------------------------
-    */
-
-    resultBox.scrollIntoView({
-        behavior: 'smooth',
-        block: 'start'
-    });
+    riskLevel.className =
+        "risk-preview-level " + className;
 
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| UPDATE FACTOR
-|--------------------------------------------------------------------------
-*/
-
-function updateFactor(
-    valueId,
-    barId,
-    value
-) {
-
-    const number =
-        parseFloat(
-            value ?? 0
-        );
-
-
-    document
-        .getElementById(valueId)
-        .textContent =
-        number.toFixed(0);
-
-
-    document
-        .getElementById(barId)
-        .style.width =
-        Math.min(
-            Math.max(
-                number,
-                0
-            ),
-            100
-        ) + '%';
-
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| RESET
-|--------------------------------------------------------------------------
-*/
-
-document
-    .getElementById('resetButton')
-    .addEventListener(
-        'click',
-        function() {
-
-            setTimeout(
-                function() {
-
-                    document
-                        .getElementById('result')
-                        .style.display =
-                        'none';
-
-                    document
-                        .getElementById('errorBox')
-                        .style.display =
-                        'none';
-
-                    /*
-                    | Reset sliders to default 50
-                    */
-
-                    floodSlider.value = 50;
-                    landslideSlider.value = 50;
-                    historySlider.value = 50;
-                    vulnerabilitySlider.value = 50;
-
-                    updateSliderDisplays();
-
-                    /*
-                    | Remove selected information
-                    */
-
-                    selectedInfo.style.display =
-                        'none';
-
-                    selectedInfo.innerHTML =
-                        '';
-
-                    /*
-                    | Disable relocation button
-                    */
-
-                    planRelocationButton.href =
-                        '#';
-
-                    planRelocationButton.classList.add(
-                        'disabled'
-                    );
-
-                },
-                0
-            );
-
-        }
-    );
-
-
-/*
-|--------------------------------------------------------------------------
-| HTML ESCAPE
-|--------------------------------------------------------------------------
-*/
-
-function escapeHtml(value) {
-
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| LOAD ID FROM URL
-|--------------------------------------------------------------------------
-*/
-
-document.addEventListener(
-    'DOMContentLoaded',
-    function() {
-
-        /*
-        | If risk_assessment.php?id=6 is opened,
-        | Demo Village is automatically selected.
-        */
-
-        if (
-            habitationSelect.value
-        ) {
-
-            loadSelectedHabitation();
-
-        }
-
-    }
+flood.addEventListener(
+    "input",
+    updateRiskPreview
 );
 
+landslide.addEventListener(
+    "input",
+    updateRiskPreview
+);
+
+hazard.addEventListener(
+    "input",
+    updateRiskPreview
+);
+
+vulnerability.addEventListener(
+    "input",
+    updateRiskPreview
+);
+
+
+updateRiskPreview();
+
 </script>
+
 
 </body>
 

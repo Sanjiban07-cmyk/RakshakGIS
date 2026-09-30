@@ -3,154 +3,362 @@
 error_reporting(E_ALL);
 ini_set('display_errors', '1');
 
-require_once __DIR__ . "/../config/auth.php";
+require_once __DIR__ . '/../config/auth.php';
 requireLogin();
 
-require_once __DIR__ . "/../config/database.php";
+require_once __DIR__ . '/../config/database.php';
 
 $user = currentUser();
+$isAdmin = (($user['role'] ?? '') === 'ADMIN');
 
-$message = "";
-$error = "";
+$message = '';
+$error = '';
 
-
-/*
-|--------------------------------------------------------------------------
-| DISTANCE CALCULATOR
-|--------------------------------------------------------------------------
-| Haversine formula
-| Returns distance in kilometres.
-|--------------------------------------------------------------------------
-*/
-
-function calculateDistance(
-    float $lat1,
-    float $lon1,
-    float $lat2,
-    float $lon2
-): float {
-
-    $earthRadius = 6371;
-
-    $latDifference =
-        deg2rad($lat2 - $lat1);
-
-    $lonDifference =
-        deg2rad($lon2 - $lon1);
-
-    $a =
-        sin($latDifference / 2) ** 2
-        +
-        cos(deg2rad($lat1))
-        *
-        cos(deg2rad($lat2))
-        *
-        sin($lonDifference / 2) ** 2;
-
-    $c =
-        2 * atan2(
-            sqrt($a),
-            sqrt(1 - $a)
-        );
-
-    return $earthRadius * $c;
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| SAFETY SCORE
-|--------------------------------------------------------------------------
-*/
-
-function safetyScore(string $level): int
+function e($value)
 {
-    return match ($level) {
-
-        "HIGH" => 60,
-
-        "MEDIUM" => 40,
-
-        default => 20
-    };
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 }
 
+/* =========================================================
+   UPDATE STATUS
+   ========================================================= */
 
-/*
-|--------------------------------------------------------------------------
-| GET HABITATIONS
-|--------------------------------------------------------------------------
-*/
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_status'])) {
 
-$habitations = [];
+    if (!$isAdmin) {
 
-$habitationResult = $conn->query("
-    SELECT
-        h.id,
-        h.name,
-        h.district,
-        h.state,
-        h.population,
-        h.latitude,
-        h.longitude,
+        $error = 'Only administrators can change plan status.';
 
-        ra.risk_score,
-        ra.risk_level,
-        ra.red_zone,
-        ra.relocation_priority
+    } else {
 
-    FROM habitations h
+        $planId = (int)($_POST['plan_id'] ?? 0);
 
-    LEFT JOIN risk_assessments ra
-        ON ra.id = (
-            SELECT ra2.id
-            FROM risk_assessments ra2
-            WHERE ra2.habitation_id = h.id
-            ORDER BY ra2.assessed_at DESC, ra2.id DESC
-            LIMIT 1
-        )
+        $status = strtoupper(trim($_POST['status'] ?? 'PLANNED'));
 
-    ORDER BY
-        CASE
-            WHEN ra.relocation_priority = 'IMMEDIATE' THEN 1
-            WHEN ra.relocation_priority = 'SHORT-TERM' THEN 2
-            WHEN ra.relocation_priority = 'MEDIUM-TERM' THEN 3
-            ELSE 4
-        END,
-        h.name
-");
+        $allowed = [
+            'PLANNED',
+            'APPROVED',
+            'IN_PROGRESS',
+            'COMPLETED',
+            'CANCELLED'
+        ];
 
+        if ($planId <= 0) {
 
-if ($habitationResult) {
+            $error = 'Invalid relocation plan.';
 
-    while ($row = $habitationResult->fetch_assoc()) {
+        } elseif (!in_array($status, $allowed, true)) {
 
-        $habitations[] = $row;
+            $error = 'Invalid status.';
+
+        } else {
+
+            $stmt = $conn->prepare("
+                UPDATE relocation_plans
+                SET status = ?
+                WHERE id = ?
+            ");
+
+            if (!$stmt) {
+
+                $error = 'Database error: ' . $conn->error;
+
+            } else {
+
+                $stmt->bind_param(
+                    'si',
+                    $status,
+                    $planId
+                );
+
+                if ($stmt->execute()) {
+
+                    $message = 'Plan status updated successfully.';
+
+                } else {
+
+                    $error = 'Unable to update status: ' . $stmt->error;
+                }
+
+                $stmt->close();
+            }
+        }
     }
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| GET RELOCATION SITES
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   DELETE PLAN
+   ========================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_plan'])) {
+
+    if (!$isAdmin) {
+
+        $error = 'Only administrators can delete relocation plans.';
+
+    } else {
+
+        $planId = (int)$_POST['delete_plan'];
+
+        if ($planId <= 0) {
+
+            $error = 'Invalid relocation plan.';
+
+        } else {
+
+            $stmt = $conn->prepare("
+                DELETE FROM relocation_plans
+                WHERE id = ?
+            ");
+
+            if (!$stmt) {
+
+                $error = 'Database error: ' . $conn->error;
+
+            } else {
+
+                $stmt->bind_param(
+                    'i',
+                    $planId
+                );
+
+                if ($stmt->execute()) {
+
+                    $message = 'Relocation plan deleted successfully.';
+
+                } else {
+
+                    $error = 'Unable to delete plan: ' . $stmt->error;
+                }
+
+                $stmt->close();
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   UPDATE PLAN
+   ========================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_plan'])) {
+
+    if (!$isAdmin) {
+
+        $error = 'Only administrators can edit relocation plans.';
+
+    } else {
+
+        $planId = (int)($_POST['plan_id'] ?? 0);
+
+        $siteId = (int)($_POST['relocation_site_id'] ?? 0);
+
+        $population = max(
+            0,
+            (int)($_POST['population_to_relocate'] ?? 0)
+        );
+
+        $distanceRaw = trim($_POST['distance_km'] ?? '');
+
+        $distance = ($distanceRaw === '')
+            ? null
+            : (float)$distanceRaw;
+
+        $status = strtoupper(
+            trim($_POST['status'] ?? 'PLANNED')
+        );
+
+        $reason = trim(
+            $_POST['recommendation_reason'] ?? ''
+        );
+
+        $allowed = [
+            'PLANNED',
+            'APPROVED',
+            'IN_PROGRESS',
+            'COMPLETED',
+            'CANCELLED'
+        ];
+
+        if ($planId <= 0) {
+
+            $error = 'Invalid relocation plan.';
+
+        } elseif ($siteId <= 0) {
+
+            $error = 'Please select a relocation site.';
+
+        } elseif (!in_array($status, $allowed, true)) {
+
+            $error = 'Invalid status.';
+
+        } elseif ($distance !== null && $distance < 0) {
+
+            $error = 'Distance cannot be negative.';
+
+        } else {
+
+            /*
+             * Get available capacity.
+             */
+
+            $siteStmt = $conn->prepare("
+                SELECT
+                    total_capacity,
+                    occupied_capacity
+                FROM relocation_sites
+                WHERE id = ?
+                LIMIT 1
+            ");
+
+            if (!$siteStmt) {
+
+                $error = 'Unable to check relocation site: ' . $conn->error;
+
+            } else {
+
+                $siteStmt->bind_param(
+                    'i',
+                    $siteId
+                );
+
+                $siteStmt->execute();
+
+                $siteResult = $siteStmt->get_result();
+
+                $site = $siteResult->fetch_assoc();
+
+                $siteStmt->close();
+
+                if (!$site) {
+
+                    $error = 'Relocation site not found.';
+
+                } else {
+
+                    $availableCapacity =
+                        max(
+                            0,
+                            (int)$site['total_capacity']
+                            -
+                            (int)$site['occupied_capacity']
+                        );
+
+
+                    $stmt = $conn->prepare("
+                        UPDATE relocation_plans
+                        SET
+                            relocation_site_id = ?,
+                            population_to_relocate = ?,
+                            available_capacity = ?,
+                            distance_km = ?,
+                            recommendation_reason = ?,
+                            status = ?
+                        WHERE id = ?
+                    ");
+
+                    if (!$stmt) {
+
+                        $error =
+                            'Unable to prepare update: '
+                            . $conn->error;
+
+                    } else {
+
+                        $stmt->bind_param(
+                            'iiidssi',
+                            $siteId,
+                            $population,
+                            $availableCapacity,
+                            $distance,
+                            $reason,
+                            $status,
+                            $planId
+                        );
+
+                        if ($stmt->execute()) {
+
+                            $message =
+                                'Relocation plan updated successfully.';
+
+                        } else {
+
+                            $error =
+                                'Unable to update plan: '
+                                . $stmt->error;
+                        }
+
+                        $stmt->close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   SUMMARY
+   ========================================================= */
+
+$totalPlans = 0;
+$plannedPlans = 0;
+$approvedPlans = 0;
+$progressPlans = 0;
+$completedPlans = 0;
+
+$summary = $conn->query("
+    SELECT
+        COUNT(*) AS total,
+        SUM(status = 'PLANNED') AS planned,
+        SUM(status = 'APPROVED') AS approved,
+        SUM(status = 'IN_PROGRESS') AS progress,
+        SUM(status = 'COMPLETED') AS completed
+    FROM relocation_plans
+");
+
+if ($summary) {
+
+    $s = $summary->fetch_assoc();
+
+    $totalPlans =
+        (int)($s['total'] ?? 0);
+
+    $plannedPlans =
+        (int)($s['planned'] ?? 0);
+
+    $approvedPlans =
+        (int)($s['approved'] ?? 0);
+
+    $progressPlans =
+        (int)($s['progress'] ?? 0);
+
+    $completedPlans =
+        (int)($s['completed'] ?? 0);
+}
+
+
+/* =========================================================
+   LOAD RELOCATION SITES
+   ========================================================= */
 
 $sites = [];
 
 $siteResult = $conn->query("
     SELECT
-        *,
-        GREATEST(
-            total_capacity - occupied_capacity,
-            0
-        ) AS available_capacity
-
+        id,
+        site_name,
+        district,
+        total_capacity,
+        occupied_capacity,
+        safety_level,
+        latitude,
+        longitude
     FROM relocation_sites
-
-    ORDER BY site_name
+    ORDER BY site_name ASC
 ");
-
 
 if ($siteResult) {
 
@@ -161,721 +369,171 @@ if ($siteResult) {
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| FIND RECOMMENDED SITE
-|--------------------------------------------------------------------------
-*/
-
-function recommendSite(
-    array $habitation,
-    array $sites
-): ?array {
-
-    if (
-        $habitation["latitude"] === null
-        ||
-        $habitation["longitude"] === null
-    ) {
-
-        return null;
-    }
-
-
-    $population =
-        (int) $habitation["population"];
-
-
-    $candidates = [];
-
-
-    foreach ($sites as $site) {
-
-        $available =
-            (int) $site["available_capacity"];
-
-
-        if (
-            $available <= 0
-            ||
-            $site["latitude"] === null
-            ||
-            $site["longitude"] === null
-        ) {
-
-            continue;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate actual distance
-        |--------------------------------------------------------------------------
-        */
-
-        $distance =
-            calculateDistance(
-                (float) $habitation["latitude"],
-                (float) $habitation["longitude"],
-                (float) $site["latitude"],
-                (float) $site["longitude"]
-            );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Capacity score
-        |--------------------------------------------------------------------------
-        */
-
-        if ($available >= $population) {
-
-            $capacityScore = 25;
-
-        } else {
-
-            /*
-             * Site does not have enough capacity.
-             * Keep it as a fallback but reduce its score.
-             */
-
-            $capacityScore = 5;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Distance score
-        |--------------------------------------------------------------------------
-        */
-
-        if ($distance <= 5) {
-
-            $distanceScore = 15;
-
-        } elseif ($distance <= 10) {
-
-            $distanceScore = 12;
-
-        } elseif ($distance <= 20) {
-
-            $distanceScore = 8;
-
-        } elseif ($distance <= 50) {
-
-            $distanceScore = 4;
-
-        } else {
-
-            $distanceScore = 1;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Safety score
-        |--------------------------------------------------------------------------
-        */
-
-        $safety =
-            safetyScore(
-                $site["safety_level"]
-            );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Total recommendation score
-        |--------------------------------------------------------------------------
-        */
-
-        $totalScore =
-            $safety
-            +
-            $capacityScore
-            +
-            $distanceScore;
-
-
-        $candidates[] = [
-
-            "site" => $site,
-
-            "distance" => $distance,
-
-            "score" => $totalScore,
-
-            "capacity_score" => $capacityScore,
-
-            "distance_score" => $distanceScore,
-
-            "safety_score" => $safety,
-
-            "enough_capacity" =>
-                $available >= $population
-        ];
-    }
-
-
-    if (empty($candidates)) {
-
-        return null;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Prefer sites with enough capacity
-    |--------------------------------------------------------------------------
-    */
-
-    usort(
-        $candidates,
-        function ($a, $b) {
-
-            if (
-                $a["enough_capacity"]
-                !==
-                $b["enough_capacity"]
-            ) {
-
-                return
-                    $a["enough_capacity"]
-                    ? -1
-                    : 1;
-            }
-
-
-            if (
-                $a["score"]
-                !==
-                $b["score"]
-            ) {
-
-                return
-                    $b["score"]
-                    <=>
-                    $a["score"];
-            }
-
-
-            return
-                $a["distance"]
-                <=>
-                $b["distance"];
-        }
-    );
-
-
-    return $candidates[0];
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| CREATE RELOCATION PLAN
-|--------------------------------------------------------------------------
-*/
-
-if (
-    $_SERVER["REQUEST_METHOD"] === "POST"
-    &&
-    isset($_POST["create_plan"])
-) {
-
-    if (($user["role"] ?? "") !== "ADMIN") {
-
-        $error =
-            "Only administrators can create relocation plans.";
-
-    } else {
-
-        $habitationId =
-            (int) ($_POST["habitation_id"] ?? 0);
-
-        $siteId =
-            (int) ($_POST["site_id"] ?? 0);
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find habitation
-        |--------------------------------------------------------------------------
-        */
-
-        $selectedHabitation = null;
-
-        foreach ($habitations as $habitation) {
-
-            if (
-                (int) $habitation["id"]
-                ===
-                $habitationId
-            ) {
-
-                $selectedHabitation =
-                    $habitation;
-
-                break;
-            }
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find site
-        |--------------------------------------------------------------------------
-        */
-
-        $selectedSite = null;
-
-        foreach ($sites as $site) {
-
-            if (
-                (int) $site["id"]
-                ===
-                $siteId
-            ) {
-
-                $selectedSite =
-                    $site;
-
-                break;
-            }
-        }
-
-
-        if (
-            !$selectedHabitation
-            ||
-            !$selectedSite
-        ) {
-
-            $error =
-                "Please select a valid habitation and relocation site.";
-
-        } elseif (
-            $selectedHabitation["latitude"] === null
-            ||
-            $selectedHabitation["longitude"] === null
-            ||
-            $selectedSite["latitude"] === null
-            ||
-            $selectedSite["longitude"] === null
-        ) {
-
-            $error =
-                "Both habitation and relocation site must have coordinates.";
-
-        } else {
-
-            $population =
-                (int)
-                $selectedHabitation["population"];
-
-
-            $available =
-                (int)
-                $selectedSite["available_capacity"];
-
-
-            if ($available <= 0) {
-
-                $error =
-                    "The selected relocation site has no available capacity.";
-
-            } elseif ($available < $population) {
-
-                $error =
-                    "The selected site does not have enough capacity for "
-                    .
-                    number_format($population)
-                    .
-                    " people.";
-
-            } else {
-
-                /*
-                |--------------------------------------------------------------------------
-                | Actual distance
-                |--------------------------------------------------------------------------
-                */
-
-                $distance =
-                    calculateDistance(
-                        (float)
-                        $selectedHabitation["latitude"],
-
-                        (float)
-                        $selectedHabitation["longitude"],
-
-                        (float)
-                        $selectedSite["latitude"],
-
-                        (float)
-                        $selectedSite["longitude"]
-                    );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Recommendation reason
-                |--------------------------------------------------------------------------
-                */
-
-                $riskLevel =
-                    $selectedHabitation["risk_level"]
-                    ??
-                    "UNASSESSED";
-
-
-                $priority =
-                    $selectedHabitation["relocation_priority"]
-                    ??
-                    "NONE";
-
-
-                $reason =
-                    "Selected based on "
-                    .
-                    $selectedSite["safety_level"]
-                    .
-                    " safety, sufficient available capacity of "
-                    .
-                    number_format($available)
-                    .
-                    " people, and calculated distance of "
-                    .
-                    number_format($distance, 2)
-                    .
-                    " km from "
-                    .
-                    $selectedHabitation["name"]
-                    .
-                    ". Current habitation risk is "
-                    .
-                    $riskLevel
-                    .
-                    " with relocation priority "
-                    .
-                    $priority
-                    .
-                    ".";
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | CREATE PLAN
-                |--------------------------------------------------------------------------
-                */
-
-                $stmt = $conn->prepare("
-                    INSERT INTO relocation_plans
-                    (
-                        habitation_id,
-                        relocation_site_id,
-                        population_to_relocate,
-                        available_capacity,
-                        distance_km,
-                        recommendation_reason,
-                        status
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, 'PLANNED')
-                ");
-
-
-                $stmt->bind_param(
-                    "iiiids",
-                    $habitationId,
-                    $siteId,
-                    $population,
-                    $available,
-                    $distance,
-                    $reason
-                );
-
-
-                if ($stmt->execute()) {
-
-                    $message =
-                        "Relocation plan created successfully.";
-
-                } else {
-
-                    $error =
-                        "Unable to create relocation plan: "
-                        .
-                        $stmt->error;
-                }
-
-
-                $stmt->close();
-            }
-        }
-    }
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| UPDATE PLAN STATUS
-|--------------------------------------------------------------------------
-*/
-
-if (
-    $_SERVER["REQUEST_METHOD"] === "POST"
-    &&
-    isset($_POST["update_status"])
-) {
-
-    if (($user["role"] ?? "") !== "ADMIN") {
-
-        $error =
-            "Only administrators can update relocation plans.";
-
-    } else {
-
-        $planId =
-            (int) ($_POST["plan_id"] ?? 0);
-
-        $status =
-            strtoupper(
-                trim(
-                    $_POST["status"] ?? ""
-                )
-            );
-
-
-        $allowedStatuses = [
-
-            "PLANNED",
-
-            "APPROVED",
-
-            "IN_PROGRESS",
-
-            "COMPLETED",
-
-            "CANCELLED"
-        ];
-
-
-        if (
-            $planId <= 0
-            ||
-            !in_array(
-                $status,
-                $allowedStatuses,
-                true
-            )
-        ) {
-
-            $error =
-                "Invalid relocation plan status.";
-
-        } else {
-
-            $stmt = $conn->prepare("
-                UPDATE relocation_plans
-                SET status = ?
-                WHERE id = ?
-            ");
-
-
-            $stmt->bind_param(
-                "si",
-                $status,
-                $planId
-            );
-
-
-            if ($stmt->execute()) {
-
-                $message =
-                    "Relocation plan status updated.";
-
-            } else {
-
-                $error =
-                    "Unable to update plan status.";
-            }
-
-
-            $stmt->close();
-        }
-    }
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| GET EXISTING PLANS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   LOAD PLANS
+   ========================================================= */
 
 $plans = [];
 
-
-$planResult = $conn->query("
+$sql = "
     SELECT
 
-        rp.*,
+        rp.id,
+        rp.habitation_id,
+        rp.relocation_site_id,
+        rp.population_to_relocate,
+        rp.available_capacity,
+        rp.distance_km,
+        rp.recommendation_reason,
+        rp.status,
+        rp.created_at,
 
         h.name AS habitation_name,
         h.district AS habitation_district,
+        h.state AS habitation_state,
         h.population AS habitation_population,
-
-        ra.risk_score,
-        ra.risk_level,
-        ra.red_zone,
-        ra.relocation_priority,
 
         rs.site_name,
         rs.district AS site_district,
-        rs.safety_level
+        rs.total_capacity,
+        rs.occupied_capacity,
+        rs.safety_level,
+
+        ra.risk_level,
+        ra.risk_score,
+        ra.red_zone,
+        ra.relocation_priority
 
     FROM relocation_plans rp
 
-    INNER JOIN habitations h
+    LEFT JOIN habitations h
         ON h.id = rp.habitation_id
 
-    INNER JOIN relocation_sites rs
+    LEFT JOIN relocation_sites rs
         ON rs.id = rp.relocation_site_id
 
     LEFT JOIN risk_assessments ra
         ON ra.id = (
-            SELECT ra2.id
+            SELECT MAX(ra2.id)
             FROM risk_assessments ra2
-            WHERE ra2.habitation_id = h.id
-            ORDER BY ra2.assessed_at DESC, ra2.id DESC
-            LIMIT 1
+            WHERE ra2.habitation_id = rp.habitation_id
         )
 
-    ORDER BY
-        CASE rp.status
-            WHEN 'IN_PROGRESS' THEN 1
-            WHEN 'APPROVED' THEN 2
-            WHEN 'PLANNED' THEN 3
-            WHEN 'COMPLETED' THEN 4
-            WHEN 'CANCELLED' THEN 5
-        END,
+    ORDER BY rp.id DESC
+";
 
-        rp.created_at DESC
-");
+$result = $conn->query($sql);
 
+if ($result) {
 
-if ($planResult) {
-
-    while ($row = $planResult->fetch_assoc()) {
+    while ($row = $result->fetch_assoc()) {
 
         $plans[] = $row;
     }
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| SUMMARY
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   SEARCH
+   ========================================================= */
 
-$totalPlans = count($plans);
+$search = trim($_GET['search'] ?? '');
 
-$plannedCount = 0;
-$approvedCount = 0;
-$inProgressCount = 0;
-$completedCount = 0;
+if ($search !== '') {
+
+    $needle = strtolower($search);
+
+    $plans = array_values(
+        array_filter(
+            $plans,
+            function ($plan) use ($needle) {
+
+                return
+                    str_contains(
+                        strtolower(
+                            (string)$plan['habitation_name']
+                        ),
+                        $needle
+                    )
+
+                    ||
+
+                    str_contains(
+                        strtolower(
+                            (string)$plan['habitation_district']
+                        ),
+                        $needle
+                    )
+
+                    ||
+
+                    str_contains(
+                        strtolower(
+                            (string)$plan['site_name']
+                        ),
+                        $needle
+                    )
+
+                    ||
+
+                    str_contains(
+                        strtolower(
+                            (string)$plan['status']
+                        ),
+                        $needle
+                    );
+            }
+        )
+    );
+}
 
 
-foreach ($plans as $plan) {
+/* =========================================================
+   PRIORITY CLASS
+   ========================================================= */
 
-    switch ($plan["status"]) {
+function priorityClass($priority)
+{
+    switch (strtoupper($priority)) {
 
-        case "PLANNED":
-            $plannedCount++;
-            break;
+        case 'IMMEDIATE':
+            return 'priority-high';
 
-        case "APPROVED":
-            $approvedCount++;
-            break;
+        case 'SHORT-TERM':
+            return 'priority-medium';
 
-        case "IN_PROGRESS":
-            $inProgressCount++;
-            break;
+        case 'MEDIUM-TERM':
+            return 'priority-low';
 
-        case "COMPLETED":
-            $completedCount++;
-            break;
+        default:
+            return 'priority-none';
     }
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| RECOMMENDATIONS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   STATUS CLASS
+   ========================================================= */
 
-$recommendations = [];
+function statusClass($status)
+{
+    switch (strtoupper($status)) {
 
+        case 'APPROVED':
+            return 'status-approved';
 
-foreach ($habitations as $habitation) {
+        case 'IN_PROGRESS':
+            return 'status-progress';
 
-    $recommendation =
-        recommendSite(
-            $habitation,
-            $sites
-        );
+        case 'COMPLETED':
+            return 'status-completed';
 
+        case 'CANCELLED':
+            return 'status-cancelled';
 
-    if ($recommendation) {
-
-        $recommendations[
-            $habitation["id"]
-        ] = $recommendation;
+        default:
+            return 'status-planned';
     }
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| CSS HELPERS
-|--------------------------------------------------------------------------
-*/
-
-function riskBadgeClass(
-    ?string $risk
-): string {
-
-    return match ($risk) {
-
-        "HIGH" => "risk-high",
-
-        "MEDIUM" => "risk-medium",
-
-        "LOW" => "risk-low",
-
-        default => "risk-none"
-    };
-}
-
-
-function statusBadgeClass(
-    string $status
-): string {
-
-    return match ($status) {
-
-        "APPROVED" => "status-approved",
-
-        "IN_PROGRESS" => "status-progress",
-
-        "COMPLETED" => "status-completed",
-
-        "CANCELLED" => "status-cancelled",
-
-        default => "status-planned"
-    };
 }
 
 ?>
@@ -893,670 +551,565 @@ function statusBadgeClass(
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>
-    Relocation Plans | RakshakGIS
-</title>
-
+<title>Relocation Plans | RakshakGIS</title>
 
 <link
     rel="stylesheet"
     href="../assets/css/style.css"
 >
 
-
 <style>
 
-/* =========================================
+/* =========================================================
    PAGE
-   ========================================= */
+   ========================================================= */
 
-.plan-header {
-
-    display: flex;
-
-    justify-content: space-between;
-
-    align-items: flex-start;
-
-    gap: 20px;
-
-    margin-bottom: 22px;
+.plans-page {
+    width: 100%;
 }
 
+
+/* =========================================================
+   ALERT
+   ========================================================= */
+
+.plan-alert {
+    padding: 13px 16px;
+    border-radius: 10px;
+    margin-bottom: 18px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.plan-alert-success {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #86efac;
+}
+
+.plan-alert-error {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fca5a5;
+}
+
+
+/* =========================================================
+   HEADER
+   ========================================================= */
+
+.plan-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 22px;
+}
 
 .plan-heading h1 {
-
+    margin: 0;
+    color: #102a56;
     font-size: 24px;
-
-    font-weight: 800;
 }
-
 
 .plan-heading p {
+    margin: 6px 0 0;
+    color: #64748b;
+    font-size: 13px;
+}
 
-    margin-top: 5px;
+.create-plan-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 11px 16px;
+    background: #2563eb;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 9px;
+    font-weight: 800;
+    font-size: 13px;
+}
 
-    font-size: 12px;
-
-    color: var(--muted);
+.create-plan-btn:hover {
+    background: #1d4ed8;
 }
 
 
-/* =========================================
+/* =========================================================
    SUMMARY
-   ========================================= */
+   ========================================================= */
 
 .plan-summary {
-
     display: grid;
-
-    grid-template-columns:
-        repeat(5, 1fr);
-
-    gap: 14px;
-
-    margin-bottom: 22px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 15px;
+    margin-bottom: 25px;
 }
 
-
-.plan-stat {
-
-    background: white;
-
-    border: 1px solid var(--border);
-
-    border-radius: 12px;
-
-    padding: 17px;
+.summary-box {
+    background: #fff;
+    border: 1px solid #dfe6ef;
+    border-radius: 13px;
+    padding: 18px;
 }
 
-
-.plan-stat-label {
-
+.summary-title {
+    color: #64748b;
     font-size: 11px;
-
-    color: var(--muted);
+    margin-bottom: 9px;
+    text-transform: uppercase;
+    font-weight: 700;
 }
 
-
-.plan-stat-value {
-
-    font-size: 24px;
-
-    font-weight: 800;
-
-    margin-top: 5px;
+.summary-number {
+    font-size: 27px;
+    font-weight: 900;
+    color: #172033;
 }
 
-
-.plan-stat.approved
-.plan-stat-value {
-
+.summary-blue {
     color: #2563eb;
 }
 
-
-.plan-stat.progress
-.plan-stat-value {
-
+.summary-orange {
     color: #d97706;
 }
 
-
-.plan-stat.completed
-.plan-stat-value {
-
+.summary-green {
     color: #16a34a;
 }
 
 
-/* =========================================
-   RECOMMENDATIONS
-   ========================================= */
-
-.section-title {
-
-    font-size: 16px;
-
-    font-weight: 800;
-
-    margin-bottom: 5px;
-}
-
-
-.section-subtitle {
-
-    font-size: 11px;
-
-    color: var(--muted);
-
-    margin-bottom: 15px;
-}
-
-
-.recommendation-grid {
-
-    display: grid;
-
-    grid-template-columns:
-        repeat(3, 1fr);
-
-    gap: 15px;
-
-    margin-bottom: 25px;
-}
-
-
-.recommendation-card {
-
-    background: white;
-
-    border: 1px solid var(--border);
-
-    border-radius: 12px;
-
-    padding: 18px;
-
-    transition: 0.2s ease;
-}
-
-
-.recommendation-card:hover {
-
-    transform: translateY(-2px);
-
-    box-shadow:
-        0 8px 25px
-        rgba(15,23,42,0.07);
-}
-
-
-.recommendation-top {
-
-    display: flex;
-
-    justify-content: space-between;
-
-    align-items: flex-start;
-
-    gap: 10px;
-}
-
-
-.habitation-name {
-
-    font-size: 14px;
-
-    font-weight: 800;
-}
-
-
-.habitation-location {
-
-    font-size: 10px;
-
-    color: var(--muted);
-
-    margin-top: 3px;
-}
-
-
-.risk-badge {
-
-    display: inline-flex;
-
-    padding: 4px 8px;
-
-    border-radius: 999px;
-
-    font-size: 9px;
-
-    font-weight: 800;
-}
-
-
-.risk-high {
-
-    background: #fee2e2;
-
-    color: #b91c1c;
-}
-
-
-.risk-medium {
-
-    background: #fef3c7;
-
-    color: #b45309;
-}
-
-
-.risk-low {
-
-    background: #dcfce7;
-
-    color: #15803d;
-}
-
-
-.risk-none {
-
-    background: #f1f5f9;
-
-    color: #64748b;
-}
-
-
-.recommendation-arrow {
-
-    text-align: center;
-
-    color: #94a3b8;
-
-    font-size: 14px;
-
-    margin: 10px 0;
-}
-
-
-.recommended-site {
-
-    background: #eff6ff;
-
-    border: 1px solid #dbeafe;
-
-    border-radius: 9px;
-
-    padding: 12px;
-}
-
-
-.recommended-label {
-
-    font-size: 9px;
-
-    text-transform: uppercase;
-
-    letter-spacing: .5px;
-
-    color: #64748b;
-}
-
-
-.recommended-name {
-
-    font-size: 13px;
-
-    font-weight: 800;
-
-    color: #1d4ed8;
-
-    margin-top: 3px;
-}
-
-
-.recommendation-details {
-
-    display: grid;
-
-    grid-template-columns:
-        repeat(3, 1fr);
-
-    gap: 8px;
-
-    margin-top: 12px;
-}
-
-
-.detail-box {
-
-    background: #f8fafc;
-
-    border-radius: 7px;
-
-    padding: 8px;
-}
-
-
-.detail-label {
-
-    font-size: 8px;
-
-    color: var(--muted);
-}
-
-
-.detail-value {
-
-    font-size: 11px;
-
-    font-weight: 800;
-
-    margin-top: 3px;
-}
-
-
-.recommendation-reason {
-
-    font-size: 10px;
-
-    color: var(--muted);
-
-    line-height: 1.5;
-
-    margin-top: 11px;
-}
-
-
-/* =========================================
-   PLANS TABLE
-   ========================================= */
-
-.plans-card {
-
-    background: white;
-
-    border: 1px solid var(--border);
-
-    border-radius: 12px;
-
+/* =========================================================
+   TABLE CARD
+   ========================================================= */
+
+.plan-card {
+    background: #fff;
+    border: 1px solid #dfe6ef;
+    border-radius: 14px;
     overflow: hidden;
 }
 
-
-.plan-habitation {
-
-    font-weight: 800;
+.plan-card-header {
+    padding: 18px 20px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
 }
 
-
-.plan-location {
-
-    font-size: 10px;
-
-    color: var(--muted);
-
-    margin-top: 3px;
+.plan-card-title {
+    font-size: 16px;
+    font-weight: 900;
+    color: #172033;
 }
 
-
-.plan-site {
-
-    font-weight: 700;
-
-    color: #1d4ed8;
+.plan-card-subtitle {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #64748b;
 }
 
-
-.plan-site-location {
-
-    font-size: 10px;
-
-    color: var(--muted);
-
-    margin-top: 3px;
-}
-
-
-.plan-risk {
-
-    display: inline-flex;
-
-    padding: 4px 8px;
-
-    border-radius: 999px;
-
-    font-size: 9px;
-
-    font-weight: 800;
-}
-
-
-.status-badge {
-
-    display: inline-flex;
-
-    padding: 5px 9px;
-
-    border-radius: 999px;
-
-    font-size: 9px;
-
-    font-weight: 800;
-}
-
-
-.status-planned {
-
-    background: #f1f5f9;
-
-    color: #475569;
-}
-
-
-.status-approved {
-
-    background: #dbeafe;
-
-    color: #1d4ed8;
-}
-
-
-.status-progress {
-
-    background: #fef3c7;
-
-    color: #b45309;
-}
-
-
-.status-completed {
-
-    background: #dcfce7;
-
-    color: #15803d;
-}
-
-
-.status-cancelled {
-
-    background: #fee2e2;
-
-    color: #b91c1c;
-}
-
-
-.distance {
-
-    font-weight: 800;
-}
-
-
-.distance-unit {
-
-    font-size: 10px;
-
-    color: var(--muted);
-}
-
-
-.status-form select {
-
-    border: 1px solid var(--border);
-
-    border-radius: 7px;
-
-    padding: 6px;
-
-    font-size: 10px;
-
-    background: white;
-
+.plan-search {
+    width: 270px;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 13px;
     outline: none;
 }
 
-
-/* =========================================
-   MODAL
-   ========================================= */
-
-.modal {
-
-    position: fixed;
-
-    inset: 0;
-
-    display: none;
-
-    align-items: center;
-
-    justify-content: center;
-
-    padding: 20px;
-
-    background:
-        rgba(15,23,42,.55);
-
-    backdrop-filter: blur(3px);
-
-    z-index: 5000;
+.plan-search:focus {
+    border-color: #2563eb;
 }
 
 
-.modal.active {
+/* =========================================================
+   TABLE
+   ========================================================= */
 
-    display: flex;
+.plan-table-wrap {
+    overflow-x: auto;
 }
 
-
-.modal-card {
-
+.plan-table {
     width: 100%;
-
-    max-width: 650px;
-
-    max-height: 90vh;
-
-    overflow-y: auto;
-
-    background: white;
-
-    border-radius: 15px;
-
-    box-shadow:
-        0 25px 60px
-        rgba(15,23,42,.25);
+    border-collapse: collapse;
+    min-width: 1050px;
 }
 
-
-.modal-header {
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
-    padding: 20px 22px;
-
-    border-bottom: 1px solid var(--border);
+.plan-table th {
+    background: #f8fafc;
+    color: #64748b;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    padding: 13px 14px;
+    text-align: left;
+    white-space: nowrap;
 }
 
+.plan-table td {
+    padding: 14px;
+    border-top: 1px solid #edf1f5;
+    color: #172033;
+    font-size: 12px;
+    white-space: nowrap;
+}
 
-.modal-header h2 {
+.plan-table tr:hover td {
+    background: #f8fafc;
+}
 
-    font-size: 17px;
+.habitation-link {
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 800;
+}
 
+.habitation-link:hover {
+    text-decoration: underline;
+}
+
+.site-name {
     font-weight: 800;
 }
 
 
-.modal-close {
+/* =========================================================
+   BADGES
+   ========================================================= */
 
-    width: 32px;
+.badge {
+    display: inline-block;
+    padding: 6px 9px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 800;
+}
 
-    height: 32px;
+.priority-high {
+    background: #fee2e2;
+    color: #dc2626;
+}
 
-    border: none;
+.priority-medium {
+    background: #fef3c7;
+    color: #b45309;
+}
 
-    border-radius: 8px;
+.priority-low {
+    background: #dcfce7;
+    color: #15803d;
+}
 
+.priority-none {
     background: #f1f5f9;
-
-    cursor: pointer;
-
-    font-size: 18px;
+    color: #64748b;
 }
 
 
-.modal-body {
+/* =========================================================
+   STATUS
+   ========================================================= */
 
-    padding: 22px;
-}
-
-
-.modal-footer {
-
-    display: flex;
-
-    justify-content: flex-end;
-
-    gap: 10px;
-
-    padding: 16px 22px;
-
-    border-top: 1px solid var(--border);
-}
-
-
-.selection-info {
-
-    margin-top: 12px;
-
-    padding: 12px;
-
-    background: #f8fafc;
-
-    border-radius: 9px;
-
+.status-select {
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    padding: 7px 9px;
+    background: #fff;
     font-size: 11px;
-
-    color: var(--muted);
-
-    line-height: 1.6;
+    font-weight: 700;
+    cursor: pointer;
 }
 
+.status-select:focus {
+    outline: none;
+    border-color: #2563eb;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 6px 9px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 800;
+}
+
+.status-planned {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.status-approved {
+    background: #e0e7ff;
+    color: #4338ca;
+}
+
+.status-progress {
+    background: #ffedd5;
+    color: #c2410c;
+}
+
+.status-completed {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.status-cancelled {
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+
+/* =========================================================
+   ACTION BUTTONS
+   ========================================================= */
+
+.plan-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.plan-action {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: 1px solid #dbe3ef;
+    background: #fff;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 14px;
+}
+
+.plan-action-view {
+    color: #2563eb;
+}
+
+.plan-action-view:hover {
+    background: #eff6ff;
+}
+
+.plan-action-edit {
+    color: #d97706;
+}
+
+.plan-action-edit:hover {
+    background: #fffbeb;
+}
+
+.plan-action-delete {
+    color: #dc2626;
+}
+
+.plan-action-delete:hover {
+    background: #fef2f2;
+}
+
+
+/* =========================================================
+   EMPTY
+   ========================================================= */
+
+.plan-empty {
+    text-align: center;
+    padding: 50px 20px;
+    color: #64748b;
+}
+
+
+/* =========================================================
+   MODAL
+   ========================================================= */
+
+.plan-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    background: rgba(15, 23, 42, .55);
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.plan-modal.show {
+    display: flex;
+}
+
+.plan-modal-box {
+    width: min(700px, 100%);
+    max-height: 90vh;
+    overflow-y: auto;
+    background: #fff;
+    border-radius: 15px;
+    box-shadow: 0 25px 70px rgba(0,0,0,.25);
+}
+
+.plan-modal-header {
+    padding: 18px 20px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.plan-modal-header h2 {
+    margin: 0;
+    font-size: 18px;
+    color: #102a56;
+}
+
+.plan-modal-close {
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 8px;
+    background: #f1f5f9;
+    cursor: pointer;
+    font-size: 20px;
+}
+
+.plan-modal-body {
+    padding: 20px;
+}
+
+.plan-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.plan-form-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.plan-form-full {
+    grid-column: 1 / -1;
+}
+
+.plan-label {
+    margin-bottom: 7px;
+    font-size: 12px;
+    font-weight: 800;
+    color: #475569;
+}
+
+.plan-input,
+.plan-select,
+.plan-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 11px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #172033;
+    background: #fff;
+}
+
+.plan-input:focus,
+.plan-select:focus,
+.plan-textarea:focus {
+    outline: none;
+    border-color: #2563eb;
+}
+
+.plan-textarea {
+    min-height: 100px;
+    resize: vertical;
+}
+
+.plan-capacity {
+    margin-top: 6px;
+    font-size: 10px;
+    color: #64748b;
+}
+
+.plan-modal-footer {
+    padding: 15px 20px;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.plan-cancel {
+    padding: 10px 16px;
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #334155;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.plan-save {
+    padding: 10px 16px;
+    border: 0;
+    background: #2563eb;
+    color: #fff;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.plan-save:hover {
+    background: #1d4ed8;
+}
+
+
+/* =========================================================
+   RESPONSIVE
+   ========================================================= */
 
 @media (max-width: 1100px) {
 
     .plan-summary {
-
-        grid-template-columns:
-            repeat(3, 1fr);
-    }
-
-    .recommendation-grid {
-
-        grid-template-columns:
-            repeat(2, 1fr);
+        grid-template-columns: repeat(3, 1fr);
     }
 }
 
+@media (max-width: 750px) {
 
-@media (max-width: 700px) {
-
-    .plan-header {
-
+    .plan-heading {
         flex-direction: column;
+        align-items: flex-start;
     }
 
     .plan-summary {
-
         grid-template-columns: 1fr 1fr;
     }
 
-    .recommendation-grid {
+    .plan-card-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
 
+    .plan-search {
+        width: 100%;
+    }
+
+    .plan-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .plan-form-full {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 500px) {
+
+    .plan-summary {
         grid-template-columns: 1fr;
     }
 }
@@ -1568,7 +1121,6 @@ function statusBadgeClass(
 
 <body>
 
-
 <div class="app">
 
 
@@ -1578,170 +1130,159 @@ function statusBadgeClass(
 
 <aside class="sidebar">
 
+    <a href="../index.php" class="logo">
 
-<a href="../index.php" class="logo">
-    <div class="logo-icon">
-        <span>R</span>
-    </div>
-
-    <div class="logo-brand">
-        <div class="logo-text">
-            RAKSHAK <span>GIS</span>
+        <div class="logo-icon">
+            <span>R</span>
         </div>
 
-        <div class="logo-subtitle">
-            DISASTER RISK INTELLIGENCE
+        <div class="logo-brand">
+
+            <div class="logo-text">
+                RAKSHAK <span>GIS</span>
+            </div>
+
+            <div class="logo-subtitle">
+                DISASTER RISK INTELLIGENCE
+            </div>
+
         </div>
+
+    </a>
+
+
+    <nav class="sidebar-nav">
+
+        <div class="nav-section">
+            MAIN
+        </div>
+
+        <a
+            href="../index.php"
+            class="nav-link"
+        >
+            <span class="nav-icon">⌂</span>
+            Dashboard
+        </a>
+
+        <a
+            href="habitations.php"
+            class="nav-link"
+        >
+            <span class="nav-icon">⌖</span>
+            Habitations
+        </a>
+
+        <a
+            href="risk_assessment.php"
+            class="nav-link"
+        >
+            <span class="nav-icon">⚠</span>
+            Risk Assessment
+        </a>
+
+        <a
+            href="risk_map.php"
+            class="nav-link"
+        >
+            <span class="nav-icon">◎</span>
+            Risk Map
+        </a>
+
+
+        <div class="nav-section">
+            RELOCATION
+        </div>
+
+        <a
+            href="relocation_sites.php"
+            class="nav-link"
+        >
+            <span class="nav-icon">⌂</span>
+            Relocation Sites
+        </a>
+
+        <a
+            href="relocation_plans.php"
+            class="nav-link active"
+        >
+            <span class="nav-icon">→</span>
+            Relocation Plans
+        </a>
+
+
+        <div class="nav-section">
+            SYSTEM
+        </div>
+
+        <a
+            href="reports.php"
+            class="nav-link"
+        >
+            <span class="nav-icon">▤</span>
+            Reports
+        </a>
+
+        <?php if ($isAdmin): ?>
+
+            <a
+                href="admin.php"
+                class="nav-link"
+            >
+                <span class="nav-icon">⚙</span>
+                Administration
+            </a>
+
+        <?php endif; ?>
+
+    </nav>
+
+
+    <div class="sidebar-user">
+
+        <div class="sidebar-user-inner">
+
+            <div class="sidebar-avatar">
+
+                <?= e(
+                    strtoupper(
+                        substr(
+                            $user['name'] ?? 'A',
+                            0,
+                            1
+                        )
+                    )
+                ) ?>
+
+            </div>
+
+            <div class="sidebar-user-info">
+
+                <div class="sidebar-user-name">
+                    <?= e(
+                        $user['name'] ?? 'Administrator'
+                    ) ?>
+                </div>
+
+                <div class="sidebar-user-role">
+                    <?= e(
+                        $user['role'] ?? 'USER'
+                    ) ?>
+                </div>
+
+            </div>
+
+            <a
+                href="../logout.php"
+                class="sidebar-logout"
+                title="Logout"
+            >
+                ⎋
+            </a>
+
+        </div>
+
     </div>
-</a>
-
-<nav class="sidebar-nav">
-
-
-<div class="nav-section">
-    Main
-</div>
-
-
-<a
-    href="../index.php"
-    class="nav-link"
->
-    <span class="nav-icon">⌂</span>
-    Dashboard
-</a>
-
-
-<a
-    href="habitations.php"
-    class="nav-link"
->
-    <span class="nav-icon">⌖</span>
-    Habitations
-</a>
-
-
-<a
-    href="risk_assessment.php"
-    class="nav-link"
->
-    <span class="nav-icon">⚠</span>
-    Risk Assessment
-</a>
-
-
-<a
-    href="risk_map.php"
-    class="nav-link"
->
-    <span class="nav-icon">◎</span>
-    Risk Map
-</a>
-
-
-<div class="nav-section">
-    Relocation
-</div>
-
-
-<a
-    href="relocation_sites.php"
-    class="nav-link"
->
-    <span class="nav-icon">⌂</span>
-    Relocation Sites
-</a>
-
-
-<a
-    href="relocation_plans.php"
-    class="nav-link active"
->
-    <span class="nav-icon">→</span>
-    Relocation Plans
-</a>
-
-
-<div class="nav-section">
-    System
-</div>
-
-
-<a
-    href="reports.php"
-    class="nav-link"
->
-    <span class="nav-icon">▤</span>
-    Reports
-</a>
-
-
-<?php if (($user["role"] ?? "") === "ADMIN"): ?>
-
-<a
-    href="admin.php"
-    class="nav-link"
->
-    <span class="nav-icon">⚙</span>
-    Administration
-</a>
-
-<?php endif; ?>
-
-
-</nav>
-
-
-<div class="sidebar-user">
-
-<div class="sidebar-user-inner">
-
-<div class="sidebar-avatar">
-
-<?= strtoupper(
-    substr(
-        $user["name"] ?? "A",
-        0,
-        1
-    )
-) ?>
-
-</div>
-
-
-<div class="sidebar-user-info">
-
-<div class="sidebar-user-name">
-
-<?= htmlspecialchars(
-    $user["name"] ?? "Administrator"
-) ?>
-
-</div>
-
-
-<div class="sidebar-user-role">
-
-<?= htmlspecialchars(
-    $user["role"] ?? "USER"
-) ?>
-
-</div>
-
-</div>
-
-
-<a
-    href="../logout.php"
-    class="sidebar-logout"
-    title="Logout"
->
-    ⎋
-</a>
-
-</div>
-
-</div>
 
 </aside>
 
@@ -1755,87 +1296,83 @@ function statusBadgeClass(
 
 <header class="topbar">
 
-<div>
+    <div>
 
-<div class="page-title">
-    Relocation Plans
-</div>
+        <div class="page-title">
+            Relocation Plans
+        </div>
 
-<div class="page-subtitle">
-    Plan and monitor safe population relocation
-</div>
+        <div class="page-subtitle">
+            Plan and monitor safe population relocation
+        </div>
 
-</div>
+    </div>
 
+    <div class="topbar-right">
 
-<div class="topbar-right">
+        <div class="status">
 
-<div class="status">
+            <span class="status-dot"></span>
 
-<span class="status-dot"></span>
+            System Operational
 
-System Operational
+        </div>
 
-</div>
-
-</div>
+    </div>
 
 </header>
 
 
-<div class="content">
+<section class="content">
 
-
-<!-- PAGE HEADER -->
-
-<div class="plan-header">
-
-<div class="plan-heading">
-
-<h1>
-    Relocation Planning
-</h1>
-
-<p>
-    Connect high-risk habitations with suitable relocation sites
-    using capacity, safety and geographic distance.
-</p>
-
-</div>
-
-
-<?php if (($user["role"] ?? "") === "ADMIN"): ?>
-
-<button
-    class="btn btn-primary"
-    onclick="openPlanModal()"
->
-    + Create Relocation Plan
-</button>
-
-<?php endif; ?>
-
-</div>
+<div class="plans-page">
 
 
 <!-- ALERTS -->
 
 <?php if ($message): ?>
 
-<div class="alert alert-success">
-    <?= htmlspecialchars($message) ?>
-</div>
+    <div class="plan-alert plan-alert-success">
+        ✓ <?= e($message) ?>
+    </div>
 
 <?php endif; ?>
 
 
 <?php if ($error): ?>
 
-<div class="alert alert-danger">
-    <?= htmlspecialchars($error) ?>
-</div>
+    <div class="plan-alert plan-alert-error">
+        ⚠ <?= e($error) ?>
+    </div>
 
 <?php endif; ?>
+
+
+<!-- HEADER -->
+
+<div class="plan-heading">
+
+    <div>
+
+        <h1>
+            Relocation Plans
+        </h1>
+
+        <p>
+            Manage and monitor safe population relocation plans.
+        </p>
+
+    </div>
+
+
+    <a
+        href="habitations.php"
+        class="create-plan-btn"
+    >
+        ＋ Create Plan
+    </a>
+
+</div>
 
 
 <!-- SUMMARY -->
@@ -1843,645 +1380,526 @@ System Operational
 <div class="plan-summary">
 
 
-<div class="plan-stat">
+    <div class="summary-box">
 
-<div class="plan-stat-label">
-    Total Plans
-</div>
+        <div class="summary-title">
+            Total Plans
+        </div>
 
-<div class="plan-stat-value">
-    <?= $totalPlans ?>
-</div>
+        <div class="summary-number">
+            <?= $totalPlans ?>
+        </div>
 
-</div>
+    </div>
 
 
-<div class="plan-stat">
+    <div class="summary-box">
 
-<div class="plan-stat-label">
-    Planned
-</div>
+        <div class="summary-title">
+            Planned
+        </div>
 
-<div class="plan-stat-value">
-    <?= $plannedCount ?>
-</div>
+        <div class="summary-number">
+            <?= $plannedPlans ?>
+        </div>
 
-</div>
+    </div>
 
 
-<div class="plan-stat approved">
+    <div class="summary-box">
 
-<div class="plan-stat-label">
-    Approved
-</div>
+        <div class="summary-title">
+            Approved
+        </div>
 
-<div class="plan-stat-value">
-    <?= $approvedCount ?>
-</div>
+        <div class="summary-number summary-blue">
+            <?= $approvedPlans ?>
+        </div>
 
-</div>
+    </div>
 
 
-<div class="plan-stat progress">
+    <div class="summary-box">
 
-<div class="plan-stat-label">
-    In Progress
-</div>
+        <div class="summary-title">
+            In Progress
+        </div>
 
-<div class="plan-stat-value">
-    <?= $inProgressCount ?>
-</div>
+        <div class="summary-number summary-orange">
+            <?= $progressPlans ?>
+        </div>
 
-</div>
+    </div>
 
 
-<div class="plan-stat completed">
+    <div class="summary-box">
 
-<div class="plan-stat-label">
-    Completed
-</div>
+        <div class="summary-title">
+            Completed
+        </div>
 
-<div class="plan-stat-value">
-    <?= $completedCount ?>
-</div>
+        <div class="summary-number summary-green">
+            <?= $completedPlans ?>
+        </div>
 
-</div>
-
-
-</div>
-
-
-<!-- =====================================================
-     RECOMMENDATIONS
-     ===================================================== -->
-
-<div class="section-title">
-    Relocation Recommendations
-</div>
-
-<div class="section-subtitle">
-    Recommended sites are calculated from safety,
-    available capacity and actual geographic distance.
-</div>
-
-
-<div class="recommendation-grid">
-
-
-<?php foreach ($habitations as $habitation): ?>
-
-
-<?php
-
-$recommendation =
-    $recommendations[
-        $habitation["id"]
-    ]
-    ??
-    null;
-
-?>
-
-
-<div class="recommendation-card">
-
-
-<div class="recommendation-top">
-
-<div>
-
-<div class="habitation-name">
-
-<?= htmlspecialchars(
-    $habitation["name"]
-) ?>
-
-</div>
-
-<div class="habitation-location">
-
-<?= htmlspecialchars(
-    $habitation["district"]
-) ?>
-
-·
-
-Population:
-<?= number_format(
-    (int)
-    $habitation["population"]
-) ?>
-
-</div>
-
-</div>
-
-
-<span
-    class="risk-badge <?= riskBadgeClass(
-        $habitation["risk_level"]
-    ) ?>"
->
-
-<?= htmlspecialchars(
-    $habitation["risk_level"]
-    ??
-    "UNASSESSED"
-) ?>
-
-</span>
-
-</div>
-
-
-<div class="recommendation-arrow">
-    ↓ Recommended relocation site
-</div>
-
-
-<?php if ($recommendation): ?>
-
-
-<div class="recommended-site">
-
-
-<div class="recommended-label">
-    Recommended Site
-</div>
-
-
-<div class="recommended-name">
-
-<?= htmlspecialchars(
-    $recommendation["site"]["site_name"]
-) ?>
-
-</div>
-
-
-<div class="recommendation-details">
-
-
-<div class="detail-box">
-
-<div class="detail-label">
-    Distance
-</div>
-
-<div class="detail-value">
-
-<?= number_format(
-    $recommendation["distance"],
-    2
-) ?>
-
-km
-
-</div>
-
-</div>
-
-
-<div class="detail-box">
-
-<div class="detail-label">
-    Available
-</div>
-
-<div class="detail-value">
-
-<?= number_format(
-    (int)
-    $recommendation[
-        "site"
-    ][
-        "available_capacity"
-    ]
-) ?>
-
-</div>
-
-</div>
-
-
-<div class="detail-box">
-
-<div class="detail-label">
-    Safety
-</div>
-
-<div class="detail-value">
-
-<?= htmlspecialchars(
-    $recommendation[
-        "site"
-    ][
-        "safety_level"
-    ]
-) ?>
-
-</div>
-
-</div>
+    </div>
 
 
 </div>
 
 
-<div class="recommendation-reason">
+<!-- PLANS TABLE -->
 
-Recommendation score:
-<strong>
-    <?= $recommendation["score"] ?>
-</strong>
+<div class="plan-card">
 
-<br>
 
-Priority:
-<strong>
-    <?= htmlspecialchars(
-        $habitation[
-            "relocation_priority"
-        ]
-        ??
-        "NONE"
-    ) ?>
-</strong>
+    <div class="plan-card-header">
+
+        <div>
+
+            <div class="plan-card-title">
+                All Relocation Plans
+            </div>
+
+            <div class="plan-card-subtitle">
+                Registered relocation plans and current operational status.
+            </div>
+
+        </div>
+
+
+        <form
+            method="GET"
+            style="margin:0;"
+        >
+
+            <input
+                type="text"
+                name="search"
+                value="<?= e($search) ?>"
+                class="plan-search"
+                placeholder="Search habitation or site..."
+            >
+
+        </form>
+
+    </div>
+
+
+    <div class="plan-table-wrap">
+
+        <table class="plan-table">
+
+
+            <thead>
+
+                <tr>
+
+                    <th>
+                        Habitation
+                    </th>
+
+                    <th>
+                        District
+                    </th>
+
+                    <th>
+                        Relocation Site
+                    </th>
+
+                    <th>
+                        People
+                    </th>
+
+                    <th>
+                        Distance
+                    </th>
+
+                    <th>
+                        Priority
+                    </th>
+
+                    <th>
+                        Status
+                    </th>
+
+                    <th>
+                        Action
+                    </th>
+
+                </tr>
+
+            </thead>
+
+
+            <tbody>
+
+
+            <?php if (empty($plans)): ?>
+
+                <tr>
+
+                    <td
+                        colspan="8"
+                        class="plan-empty"
+                    >
+                        No relocation plans found.
+                    </td>
+
+                </tr>
+
+            <?php else: ?>
+
+
+                <?php foreach ($plans as $plan): ?>
+
+
+                    <?php
+
+                    $priority =
+                        strtoupper(
+                            $plan['relocation_priority']
+                            ?? 'NONE'
+                        );
+
+                    $status =
+                        strtoupper(
+                            $plan['status']
+                            ?? 'PLANNED'
+                        );
+
+                    $editData = [
+
+                        'id' =>
+                            (int)$plan['id'],
+
+                        'habitation' =>
+                            $plan['habitation_name']
+                            ?? '',
+
+                        'site' =>
+                            (int)$plan['relocation_site_id'],
+
+                        'population' =>
+                            (int)$plan['population_to_relocate'],
+
+                        'distance' =>
+                            $plan['distance_km'],
+
+                        'status' =>
+                            $status,
+
+                        'reason' =>
+                            $plan['recommendation_reason']
+                            ?? ''
+                    ];
+
+                    ?>
+
+
+                    <tr>
+
+
+                        <!-- HABITATION -->
+
+                        <td>
+
+                            <a
+                                href="relocation_plans.php?id=<?= (int)$plan['id'] ?>"
+                                class="habitation-link"
+                            >
+
+                                <?= e(
+                                    $plan['habitation_name']
+                                    ?? 'Unknown'
+                                ) ?>
+
+                            </a>
+
+                        </td>
+
+
+                        <!-- DISTRICT -->
+
+                        <td>
+
+                            <?= e(
+                                $plan['habitation_district']
+                                ?? '—'
+                            ) ?>
+
+                        </td>
+
+
+                        <!-- SITE -->
+
+                        <td class="site-name">
+
+                            <?= e(
+                                $plan['site_name']
+                                ?? 'Unknown'
+                            ) ?>
+
+                        </td>
+
+
+                        <!-- PEOPLE -->
+
+                        <td>
+
+                            <?= number_format(
+                                (int)(
+                                    $plan[
+                                        'population_to_relocate'
+                                    ] ?? 0
+                                )
+                            ) ?>
+
+                        </td>
+
+
+                        <!-- DISTANCE -->
+
+                        <td>
+
+                            <?php if (
+                                $plan['distance_km']
+                                !== null
+                                &&
+                                $plan['distance_km']
+                                !== ''
+                            ): ?>
+
+                                <?= number_format(
+                                    (float)$plan['distance_km'],
+                                    2
+                                ) ?>
+
+                                km
+
+                            <?php else: ?>
+
+                                —
+
+                            <?php endif; ?>
+
+                        </td>
+
+
+                        <!-- PRIORITY -->
+
+                        <td>
+
+                            <span
+                                class="badge <?= priorityClass($priority) ?>"
+                            >
+                                <?= e($priority) ?>
+                            </span>
+
+                        </td>
+
+
+                        <!-- STATUS -->
+
+                        <td>
+
+
+                            <?php if ($isAdmin): ?>
+
+
+                                <form
+                                    method="POST"
+                                    style="margin:0;"
+                                >
+
+                                    <input
+                                        type="hidden"
+                                        name="change_status"
+                                        value="1"
+                                    >
+
+                                    <input
+                                        type="hidden"
+                                        name="plan_id"
+                                        value="<?= (int)$plan['id'] ?>"
+                                    >
+
+
+                                    <select
+                                        name="status"
+                                        class="status-select"
+                                        onchange="this.form.submit()"
+                                    >
+
+                                        <option
+                                            value="PLANNED"
+                                            <?= $status === 'PLANNED'
+                                                ? 'selected'
+                                                : '' ?>
+                                        >
+                                            PLANNED
+                                        </option>
+
+                                        <option
+                                            value="APPROVED"
+                                            <?= $status === 'APPROVED'
+                                                ? 'selected'
+                                                : '' ?>
+                                        >
+                                            APPROVED
+                                        </option>
+
+                                        <option
+                                            value="IN_PROGRESS"
+                                            <?= $status === 'IN_PROGRESS'
+                                                ? 'selected'
+                                                : '' ?>
+                                        >
+                                            IN PROGRESS
+                                        </option>
+
+                                        <option
+                                            value="COMPLETED"
+                                            <?= $status === 'COMPLETED'
+                                                ? 'selected'
+                                                : '' ?>
+                                        >
+                                            COMPLETED
+                                        </option>
+
+                                        <option
+                                            value="CANCELLED"
+                                            <?= $status === 'CANCELLED'
+                                                ? 'selected'
+                                                : '' ?>
+                                        >
+                                            CANCELLED
+                                        </option>
+
+                                    </select>
+
+                                </form>
+
+
+                            <?php else: ?>
+
+
+                                <span
+                                    class="status-badge <?= statusClass($status) ?>"
+                                >
+
+                                    <?= e(
+                                        str_replace(
+                                            '_',
+                                            ' ',
+                                            $status
+                                        )
+                                    ) ?>
+
+                                </span>
+
+
+                            <?php endif; ?>
+
+
+                        </td>
+
+
+                        <!-- ACTION -->
+
+                        <td>
+
+
+                            <div class="plan-actions">
+
+
+                                <!-- VIEW -->
+
+                                <a
+                                    href="relocation_details.php?id=<?= (int)$plan['id'] ?>"
+                                    class="plan-action plan-action-view"
+                                    title="View"
+                                >
+                                    👁
+                                </a>
+
+
+                                <?php if ($isAdmin): ?>
+
+
+                                    <!-- EDIT -->
+
+                                    <button
+                                        type="button"
+                                        class="plan-action plan-action-edit"
+                                        title="Edit"
+                                        onclick='openPlanEdit(<?= json_encode(
+                                            $editData,
+                                            JSON_HEX_TAG |
+                                            JSON_HEX_APOS |
+                                            JSON_HEX_QUOT |
+                                            JSON_HEX_AMP
+                                        ) ?>)'
+                                    >
+                                        ✏️
+                                    </button>
+
+
+                                    <!-- DELETE -->
+
+                                    <form
+                                        method="POST"
+                                        style="margin:0;"
+                                        onsubmit="return confirm('Are you sure you want to delete this relocation plan?');"
+                                    >
+
+                                        <input
+                                            type="hidden"
+                                            name="delete_plan"
+                                            value="<?= (int)$plan['id'] ?>"
+                                        >
+
+                                        <button
+                                            type="submit"
+                                            class="plan-action plan-action-delete"
+                                            title="Delete"
+                                        >
+                                            🗑️
+                                        </button>
+
+                                    </form>
+
+
+                                <?php endif; ?>
+
+
+                            </div>
+
+
+                        </td>
+
+
+                    </tr>
+
+
+                <?php endforeach; ?>
+
+
+            <?php endif; ?>
+
+
+            </tbody>
+
+        </table>
+
+    </div>
 
 </div>
 
 
 </div>
 
-
-<?php else: ?>
-
-
-<div class="selection-info">
-
-No suitable relocation site could be calculated.
-Make sure the habitation and relocation sites have
-valid coordinates and available capacity.
-
-</div>
-
-
-<?php endif; ?>
-
-
-</div>
-
-
-<?php endforeach; ?>
-
-
-</div>
-
-
-<!-- =====================================================
-     EXISTING PLANS
-     ===================================================== -->
-
-<div class="section-title">
-    Existing Relocation Plans
-</div>
-
-<div class="section-subtitle">
-    Track the progress of population relocation plans.
-</div>
-
-
-<div class="plans-card">
-
-
-<div class="table-wrapper">
-
-<table>
-
-
-<thead>
-
-<tr>
-
-<th>
-    Habitation
-</th>
-
-<th>
-    Risk
-</th>
-
-<th>
-    Relocation Site
-</th>
-
-<th>
-    Population
-</th>
-
-<th>
-    Distance
-</th>
-
-<th>
-    Priority
-</th>
-
-<th>
-    Status
-</th>
-
-<?php if (($user["role"] ?? "") === "ADMIN"): ?>
-
-<th>
-    Update
-</th>
-
-<?php endif; ?>
-
-</tr>
-
-</thead>
-
-
-<tbody>
-
-
-<?php if (empty($plans)): ?>
-
-
-<tr>
-
-<td
-    colspan="8"
-    style="
-        text-align:center;
-        padding:45px;
-        color:#64748b;
-    "
->
-
-No relocation plans have been created yet.
-
-</td>
-
-</tr>
-
-
-<?php else: ?>
-
-
-<?php foreach ($plans as $plan): ?>
-
-
-<tr>
-
-
-<td>
-
-<div class="plan-habitation">
-
-<?= htmlspecialchars(
-    $plan["habitation_name"]
-) ?>
-
-</div>
-
-
-<div class="plan-location">
-
-<?= htmlspecialchars(
-    $plan["habitation_district"]
-) ?>
-
-</div>
-
-</td>
-
-
-<td>
-
-<span
-    class="plan-risk <?= riskBadgeClass(
-        $plan["risk_level"]
-    ) ?>"
->
-
-<?= htmlspecialchars(
-    $plan["risk_level"]
-    ??
-    "UNASSESSED"
-) ?>
-
-</span>
-
-</td>
-
-
-<td>
-
-<div class="plan-site">
-
-<?= htmlspecialchars(
-    $plan["site_name"]
-) ?>
-
-</div>
-
-
-<div class="plan-site-location">
-
-<?= htmlspecialchars(
-    $plan["site_district"]
-) ?>
-
-·
-
-<?= htmlspecialchars(
-    $plan["safety_level"]
-) ?>
-
-</div>
-
-</td>
-
-
-<td>
-
-<strong>
-
-<?= number_format(
-    (int)
-    $plan[
-        "population_to_relocate"
-    ]
-) ?>
-
-</strong>
-
-</td>
-
-
-<td>
-
-<span class="distance">
-
-<?= number_format(
-    (float)
-    $plan["distance_km"],
-    2
-) ?>
-
-</span>
-
-<span class="distance-unit">
-    km
-</span>
-
-</td>
-
-
-<td>
-
-<?= htmlspecialchars(
-    $plan[
-        "relocation_priority"
-    ]
-    ??
-    "NONE"
-) ?>
-
-</td>
-
-
-<td>
-
-<span
-    class="status-badge <?= statusBadgeClass(
-        $plan["status"]
-    ) ?>"
->
-
-<?= htmlspecialchars(
-    str_replace(
-        "_",
-        " ",
-        $plan["status"]
-    )
-) ?>
-
-</span>
-
-</td>
-
-
-<?php if (($user["role"] ?? "") === "ADMIN"): ?>
-
-
-<td>
-
-<form
-    method="POST"
-    class="status-form"
->
-
-<input
-    type="hidden"
-    name="plan_id"
-    value="<?= (int) $plan["id"] ?>"
->
-
-
-<select
-    name="status"
-    onchange="this.form.submit()"
->
-
-<option
-    value="PLANNED"
-    <?= $plan["status"] === "PLANNED"
-        ? "selected"
-        : "" ?>
->
-    Planned
-</option>
-
-
-<option
-    value="APPROVED"
-    <?= $plan["status"] === "APPROVED"
-        ? "selected"
-        : "" ?>
->
-    Approved
-</option>
-
-
-<option
-    value="IN_PROGRESS"
-    <?= $plan["status"] === "IN_PROGRESS"
-        ? "selected"
-        : "" ?>
->
-    In Progress
-</option>
-
-
-<option
-    value="COMPLETED"
-    <?= $plan["status"] === "COMPLETED"
-        ? "selected"
-        : "" ?>
->
-    Completed
-</option>
-
-
-<option
-    value="CANCELLED"
-    <?= $plan["status"] === "CANCELLED"
-        ? "selected"
-        : "" ?>
->
-    Cancelled
-</option>
-
-</select>
-
-
-<input
-    type="hidden"
-    name="update_status"
-    value="1"
->
-
-</form>
-
-<?php endif; ?>
-
-
-</td>
-
-
-</tr>
-
-
-<?php endforeach; ?>
-
-
-<?php endif; ?>
-
-
-</tbody>
-
-</table>
-
-</div>
-
-</div>
-
-
-</div>
+</section>
 
 </main>
 
@@ -2489,388 +1907,459 @@ No relocation plans have been created yet.
 
 
 <!-- =====================================================
-     CREATE PLAN MODAL
+     EDIT MODAL
      ===================================================== -->
 
-<div
-    class="modal"
-    id="planModal"
->
-
-
-<div class="modal-card">
-
-
-<div class="modal-header">
-
-<h2>
-    Create Relocation Plan
-</h2>
-
-
-<button
-    type="button"
-    class="modal-close"
-    onclick="closePlanModal()"
->
-    ×
-</button>
-
-</div>
-
-
-<form method="POST">
-
-
-<div class="modal-body">
-
-
-<div class="form-group">
-
-<label class="form-label">
-    Select Habitation *
-</label>
-
-
-<select
-    name="habitation_id"
-    id="habitationSelect"
-    class="form-control"
-    required
-    onchange="updateHabitationInfo()"
->
-
-
-<option value="">
-    Select habitation
-</option>
-
-
-<?php foreach ($habitations as $habitation): ?>
-
-
-<option
-    value="<?= (int) $habitation["id"] ?>"
->
-
-<?= htmlspecialchars(
-    $habitation["name"]
-) ?>
-
-·
-
-<?= htmlspecialchars(
-    $habitation["district"]
-) ?>
-
-·
-
-<?= htmlspecialchars(
-    $habitation["risk_level"]
-    ??
-    "UNASSESSED"
-) ?>
-
-</option>
-
-
-<?php endforeach; ?>
-
-
-</select>
-
-</div>
+<?php if ($isAdmin): ?>
 
 
 <div
-    class="selection-info"
-    id="habitationInfo"
->
-
-Select a habitation to view its
-population, risk and relocation priority.
-
-</div>
-
-
-<br>
-
-
-<div class="form-group">
-
-<label class="form-label">
-    Select Relocation Site *
-</label>
-
-
-<select
-    name="site_id"
-    class="form-control"
-    required
+    class="plan-modal"
+    id="planEditModal"
 >
 
 
-<option value="">
-    Select relocation site
-</option>
+    <div class="plan-modal-box">
 
 
-<?php foreach ($sites as $site): ?>
+        <div class="plan-modal-header">
+
+            <h2>
+                ✏️ Edit Relocation Plan
+            </h2>
+
+            <button
+                type="button"
+                class="plan-modal-close"
+                onclick="closePlanEdit()"
+            >
+                ×
+            </button>
+
+        </div>
 
 
-<?php
-
-$available =
-    (int)
-    $site["available_capacity"];
-
-?>
+        <form method="POST">
 
 
-<option
-    value="<?= (int) $site["id"] ?>"
-    <?= $available <= 0
-        ? "disabled"
-        : "" ?>
->
-
-<?= htmlspecialchars(
-    $site["site_name"]
-) ?>
-
-·
-
-<?= htmlspecialchars(
-    $site["district"]
-) ?>
-
-·
-
-<?= number_format(
-    $available
-) ?>
-
- available
-
-</option>
+            <input
+                type="hidden"
+                name="update_plan"
+                value="1"
+            >
 
 
-<?php endforeach; ?>
+            <input
+                type="hidden"
+                name="plan_id"
+                id="editPlanId"
+            >
 
 
-</select>
+            <div class="plan-modal-body">
+
+
+                <div
+                    style="
+                    margin-bottom:18px;
+                    color:#64748b;
+                    font-size:12px;
+                    "
+                >
+
+                    Editing plan for
+
+                    <strong
+                        id="editPlanHabitation"
+                        style="color:#172033;"
+                    ></strong>
+
+                </div>
+
+
+                <div class="plan-form-grid">
+
+
+                    <!-- SITE -->
+
+                    <div
+                        class="plan-form-group plan-form-full"
+                    >
+
+                        <label class="plan-label">
+                            Relocation Site
+                        </label>
+
+
+                        <select
+                            name="relocation_site_id"
+                            id="editSiteId"
+                            class="plan-select"
+                            required
+                            onchange="updatePlanCapacity()"
+                        >
+
+
+                            <?php foreach ($sites as $site): ?>
+
+
+                                <?php
+
+                                $available =
+                                    max(
+                                        0,
+                                        (int)$site[
+                                            'total_capacity'
+                                        ]
+                                        -
+                                        (int)$site[
+                                            'occupied_capacity'
+                                        ]
+                                    );
+
+                                ?>
+
+
+                                <option
+                                    value="<?= (int)$site['id'] ?>"
+                                    data-available="<?= $available ?>"
+                                >
+
+                                    <?= e(
+                                        $site['site_name']
+                                    ) ?>
+
+                                    —
+
+                                    <?= e(
+                                        $site['district']
+                                    ) ?>
+
+                                    (
+
+                                    <?= number_format(
+                                        $available
+                                    ) ?>
+
+                                    available)
+
+                                </option>
+
+
+                            <?php endforeach; ?>
+
+
+                        </select>
+
+
+                        <div
+                            class="plan-capacity"
+                            id="editCapacity"
+                        ></div>
+
+
+                    </div>
+
+
+                    <!-- PEOPLE -->
+
+                    <div class="plan-form-group">
+
+                        <label class="plan-label">
+                            People to Relocate
+                        </label>
+
+                        <input
+                            type="number"
+                            name="population_to_relocate"
+                            id="editPopulation"
+                            class="plan-input"
+                            min="0"
+                            required
+                        >
+
+                    </div>
+
+
+                    <!-- DISTANCE -->
+
+                    <div class="plan-form-group">
+
+                        <label class="plan-label">
+                            Distance (km)
+                        </label>
+
+                        <input
+                            type="number"
+                            name="distance_km"
+                            id="editDistance"
+                            class="plan-input"
+                            min="0"
+                            step="0.01"
+                        >
+
+                    </div>
+
+
+                    <!-- STATUS -->
+
+                    <div class="plan-form-group">
+
+                        <label class="plan-label">
+                            Status
+                        </label>
+
+                        <select
+                            name="status"
+                            id="editStatus"
+                            class="plan-select"
+                        >
+
+                            <option value="PLANNED">
+                                PLANNED
+                            </option>
+
+                            <option value="APPROVED">
+                                APPROVED
+                            </option>
+
+                            <option value="IN_PROGRESS">
+                                IN PROGRESS
+                            </option>
+
+                            <option value="COMPLETED">
+                                COMPLETED
+                            </option>
+
+                            <option value="CANCELLED">
+                                CANCELLED
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <!-- REASON -->
+
+                    <div
+                        class="plan-form-group plan-form-full"
+                    >
+
+                        <label class="plan-label">
+                            Recommendation Reason
+                        </label>
+
+                        <textarea
+                            name="recommendation_reason"
+                            id="editReason"
+                            class="plan-textarea"
+                            placeholder="Explain why this relocation site was selected..."
+                        ></textarea>
+
+                    </div>
+
+
+                </div>
+
+            </div>
+
+
+            <div class="plan-modal-footer">
+
+                <button
+                    type="button"
+                    class="plan-cancel"
+                    onclick="closePlanEdit()"
+                >
+                    Cancel
+                </button>
+
+                <button
+                    type="submit"
+                    class="plan-save"
+                >
+                    ✓ Save Changes
+                </button>
+
+            </div>
+
+
+        </form>
+
+    </div>
 
 </div>
 
 
-<div class="selection-info">
-
-The system will calculate the actual geographic
-distance from the habitation to the selected site
-using their latitude and longitude.
-
-</div>
+<?php endif; ?>
 
 
-</div>
-
-
-<div class="modal-footer">
-
-
-<button
-    type="button"
-    class="btn btn-secondary"
-    onclick="closePlanModal()"
->
-    Cancel
-</button>
-
-
-<button
-    type="submit"
-    name="create_plan"
-    class="btn btn-primary"
->
-    Create Plan
-</button>
-
-
-</div>
-
-
-</form>
-
-</div>
-
-</div>
-
+<!-- =====================================================
+     JAVASCRIPT
+     ===================================================== -->
 
 <script>
 
-/*
-|--------------------------------------------------------------------------
-| HABITATION DATA
-|--------------------------------------------------------------------------
-*/
-
-const habitationData =
-<?= json_encode(
-    $habitations,
-    JSON_HEX_TAG |
-    JSON_HEX_APOS |
-    JSON_HEX_QUOT |
-    JSON_HEX_AMP
-) ?>;
-
-
-/*
-|--------------------------------------------------------------------------
-| MODAL
-|--------------------------------------------------------------------------
-*/
-
-function openPlanModal() {
-
-    document
-        .getElementById("planModal")
-        .classList
-        .add("active");
-
-}
-
-
-function closePlanModal() {
-
-    document
-        .getElementById("planModal")
-        .classList
-        .remove("active");
-
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| HABITATION INFORMATION
-|--------------------------------------------------------------------------
-*/
-
-function updateHabitationInfo() {
-
-    const select =
+function openPlanEdit(plan)
+{
+    const modal =
         document.getElementById(
-            "habitationSelect"
+            'planEditModal'
         );
 
-
-    const info =
-        document.getElementById(
-            "habitationInfo"
-        );
-
-
-    const id =
-        Number(select.value);
-
-
-    const habitation =
-        habitationData.find(
-            item =>
-                Number(item.id) === id
-        );
-
-
-    if (!habitation) {
-
-        info.innerHTML =
-            "Select a habitation to view its " +
-            "population, risk and relocation priority.";
-
+    if (!modal)
+    {
         return;
     }
 
 
-    info.innerHTML = `
+    document.getElementById(
+        'editPlanId'
+    ).value =
+        plan.id || '';
 
-        <strong>
-            ${escapeHtml(habitation.name)}
-        </strong>
 
-        <br>
+    document.getElementById(
+        'editPlanHabitation'
+    ).textContent =
+        plan.habitation || 'Relocation Plan';
 
-        Population:
-        <strong>
-            ${Number(
-                habitation.population
-            ).toLocaleString()}
-        </strong>
 
-        <br>
+    document.getElementById(
+        'editSiteId'
+    ).value =
+        plan.site || '';
 
-        Risk:
-        <strong>
-            ${escapeHtml(
-                habitation.risk_level
-                || "UNASSESSED"
-            )}
-        </strong>
 
-        <br>
+    document.getElementById(
+        'editPopulation'
+    ).value =
+        plan.population ?? 0;
 
-        Relocation Priority:
-        <strong>
-            ${escapeHtml(
-                habitation.relocation_priority
-                || "NONE"
-            )}
-        </strong>
 
-    `;
+    document.getElementById(
+        'editDistance'
+    ).value =
+        plan.distance ?? '';
 
+
+    document.getElementById(
+        'editStatus'
+    ).value =
+        plan.status || 'PLANNED';
+
+
+    document.getElementById(
+        'editReason'
+    ).value =
+        plan.reason || '';
+
+
+    updatePlanCapacity();
+
+
+    modal.classList.add('show');
+
+    document.body.style.overflow =
+        'hidden';
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| ESCAPE HTML
-|--------------------------------------------------------------------------
-*/
+function closePlanEdit()
+{
+    const modal =
+        document.getElementById(
+            'planEditModal'
+        );
 
-function escapeHtml(value) {
+    if (!modal)
+    {
+        return;
+    }
 
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
 
+    modal.classList.remove('show');
+
+    document.body.style.overflow =
+        '';
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| CLOSE MODAL ON BACKDROP CLICK
-|--------------------------------------------------------------------------
-*/
+function updatePlanCapacity()
+{
+    const select =
+        document.getElementById(
+            'editSiteId'
+        );
+
+    const note =
+        document.getElementById(
+            'editCapacity'
+        );
+
+    if (!select || !note)
+    {
+        return;
+    }
+
+
+    const option =
+        select.options[
+            select.selectedIndex
+        ];
+
+
+    const available =
+        Number(
+            option?.dataset?.available || 0
+        );
+
+
+    note.textContent =
+        'Current available capacity: '
+        +
+        available.toLocaleString()
+        +
+        ' people';
+}
+
+
+const editModal =
+    document.getElementById(
+        'planEditModal'
+    );
+
+
+if (editModal)
+{
+    editModal.addEventListener(
+        'click',
+        function(event)
+        {
+            if (
+                event.target ===
+                editModal
+            )
+            {
+                closePlanEdit();
+            }
+        }
+    );
+}
+
 
 document.addEventListener(
-    "click",
-    function(event) {
-
-        const modal =
-            document.getElementById(
-                "planModal"
-            );
-
-
-        if (event.target === modal) {
-
-            closePlanModal();
-
+    'keydown',
+    function(event)
+    {
+        if (
+            event.key ===
+            'Escape'
+        )
+        {
+            closePlanEdit();
         }
-
     }
 );
 
